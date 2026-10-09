@@ -47,7 +47,9 @@ Invite the bot with `bot` and `applications.commands` scopes. It needs View Chan
 
 ## Render build fix (Node.js / better-sqlite3)
 
-This project is pinned to Node.js 22.x in `package.json` and `render.yaml`. The reported build log used Node.js 26, for which a compatible `better-sqlite3` prebuilt binary may not be available, causing a native compilation attempt. Commit both updated files and trigger a **Clear build cache & deploy** in Render. Keep the existing dependencies and `npm start` start command.
+This project pins Node.js **22.22.0** in `.node-version`, `package.json`, and `render.yaml`. The reported error is caused by Render building `better-sqlite3` under Node.js 26, whose V8 API is incompatible with this dependency version. Upload/commit all three updated files to the same repository branch and root directory configured in Render.
 
-If the build still fails, inspect the final compiler lines in the Render log; the Node version pin addresses the Node 26 mismatch but cannot guarantee a successful native build in every environment. Do not commit production credentials or a database containing customer/account passwords to a public repository. Render's free filesystem is ephemeral, so configure persistent storage or a managed database for production records.
+**Important:** Render Dashboard `NODE_VERSION` environment variables take precedence over files in the repository. Open **Render → your service → Environment** and change any existing `NODE_VERSION` value to `22.22.0` (or remove it so `.node-version` is used). Then open **Manual Deploy → Clear build cache & deploy**. The first lines of the new build log should say Node.js `22.22.0`, not `26.11.1`. If it still says 26, Render is using an override, a different branch/commit, or a different root directory.
+
+Do not commit production credentials or a database containing customer/account passwords to a public repository. Render's free filesystem is ephemeral, so configure persistent storage or a managed database for production records.
 

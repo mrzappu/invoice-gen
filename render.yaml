@@ -10,7 +10,7 @@ services:
       - key: NODE_ENV
         value: production
       - key: NODE_VERSION
-        value: 22.
+        value: "22.22.0"
       - key: DATA_DIR
         value: /var/data
       - key: DISCORD_TOKEN
