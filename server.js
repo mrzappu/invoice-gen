@@ -74,7 +74,7 @@ app.post('/api/invoices',apiAuth,(req,res)=>{try{const record=saveInvoice(req.bo
 // Sensitive product credentials are not returned by the public invoice API and are never rendered into invoice exports.
 
 let bot;
-const issueTypes=['Replace','Help','Bug','Refund'];
+const issueTypes=['Replace','Help','Bug','Refund','Order Status','Payment Issue','Account Access','Other'];
 const short=(s,n=90)=>String(s||'—').slice(0,n);
 function v2Card(title,body,components=[]) {
   const container=new ContainerBuilder().setAccentColor(0xf5b400);
@@ -109,51 +109,73 @@ function isOwner(interaction){return Boolean(interaction.guild && interaction.gu
 function isStaff(interaction){const roleId=process.env.STAFF_ROLE_ID;return isOwner(interaction)||Boolean(interaction.memberPermissions?.has(PermissionFlagsBits.ManageChannels)||interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)||(roleId&&interaction.member?.roles?.cache?.has(roleId)));}
 function canSeeSecrets(interaction,ticket){return isOwner(interaction)||ticket.claimed_by===interaction.user.id;}
 async function respondInteraction(interaction,payload){ if(interaction.deferred) return interaction.editReply(payload); if(interaction.replied) return interaction.followUp(payload); return interaction.reply(payload); }
+function replacementRoot(invoiceId) {
+  let current=String(invoiceId||''); const seen=new Set();
+  while(current&&!seen.has(current)){seen.add(current);const row=db.prepare('SELECT original_invoice_id FROM invoice_replacements WHERE new_invoice_id=? COLLATE NOCASE').get(current);if(!row)break;current=row.original_invoice_id;}
+  return current||String(invoiceId||'');
+}
+function replacementCount(invoiceId) {
+  const root=replacementRoot(invoiceId);
+  return Number(db.prepare(`WITH RECURSIVE chain(id) AS (SELECT new_invoice_id FROM invoice_replacements WHERE original_invoice_id=? COLLATE NOCASE UNION ALL SELECT r.new_invoice_id FROM invoice_replacements r JOIN chain c ON r.original_invoice_id=c.id) SELECT COUNT(*) AS n FROM chain`).get(root)?.n||0);
+}
+function getTemplate(invoice) {
+  const raw=String(invoice.templateName||invoice.template||invoice.invoiceTemplate||invoice.themeName||invoice.preset||'').toLowerCase();
+  const brand=String(invoice.brandName||invoice.sellerName||invoice.shopName||'').toLowerCase();
+  if(/gojo/.test(raw+' '+brand))return {name:"Gojo's Steam Lounge",brand:"GOJO'S STEAM LOUNGE",accent:'#1688ff',watermark:"GOJO'S STEAM LOUNGE",theme:'blue'};
+  if(/imposter|inet/.test(raw+' '+brand))return {name:'IMPOSTER NETWORK',brand:'IMPOSTER NETWORK',accent:'#7c3aed',watermark:'IMPOSTER NETWORK',theme:'purple'};
+  return {name:String(invoice.templateName||invoice.template||invoice.invoiceTemplate||invoice.themeName||'Standard'),brand:String(invoice.brandName||invoice.sellerName||invoice.shopName||'Your Shop'),accent:String(invoice.themeColor||invoice.primaryColor||'#2563eb'),watermark:String(invoice.watermark||invoice.brandName||invoice.sellerName||'YOUR SHOP'),theme:String(invoice.theme||'standard')};
+}
+function escapeHtml(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function makeInvoiceId(prefix='REPL') {
   return `${prefix}-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
 }
 function createInvoicePdfBuffer(invoice, metadata={}) {
   return new Promise((resolve,reject)=>{
     try {
-      const doc=new PDFDocument({size:'A4',margin:48,info:{Title:`Invoice ${invoice.invoiceId}`,Author:invoice.sellerName||invoice.shopName||'Shop'}});
+      const tpl=getTemplate(invoice); const accent=tpl.accent;
+      const doc=new PDFDocument({size:'A4',margin:48,info:{Title:`Invoice ${invoice.invoiceId}`,Author:tpl.brand}});
       const chunks=[];doc.on('data',c=>chunks.push(c));doc.on('end',()=>resolve(Buffer.concat(chunks)));doc.on('error',reject);
-      const accent=String(invoice.themeColor||invoice.primaryColor||'#2563eb');
-      doc.fontSize(22).fillColor(accent).text(String(invoice.sellerName||invoice.shopName||'INVOICE').slice(0,90));
-      doc.moveDown(.3).fontSize(18).fillColor('#111827').text(metadata.isReplacement?'REPLACEMENT INVOICE':'INVOICE');
-      doc.moveDown(.4).fontSize(10).fillColor('#333333');
-      doc.text(`Invoice ID: ${invoice.invoiceId}`);doc.text(`Buyer: ${invoice.buyerName||'—'}`);doc.text(`Date: ${new Date().toLocaleString('en-IN')}`);
-      if(metadata.originalInvoiceId)doc.text(`Replaces invoice: ${metadata.originalInvoiceId}`);
-      if(metadata.templateName)doc.text(`Template: ${metadata.templateName}`);
+      // Light watermark, consistent with the selected website brand template.
+      doc.save();doc.rotate(-32,{origin:[300,420]}).fontSize(42).fillColor(accent,0.09).text(String(invoice.watermark||tpl.watermark||tpl.brand).slice(0,60),65,390,{width:470,align:'center'});doc.restore();
+      doc.roundedRect(35,32,525,78,12).fill(accent);
+      doc.fontSize(20).fillColor('#ffffff').text(tpl.brand.slice(0,70),52,48,{width:490});
+      doc.fontSize(9).fillColor('#ffffff').text(String(invoice.tagline||'Digital Products • Games • Services').slice(0,100),52,80,{width:490});
+      doc.moveDown(3.5).fontSize(18).fillColor(accent).text(metadata.isReplacement?'REPLACEMENT INVOICE':String(invoice.documentType||'INVOICE').toUpperCase());
+      doc.moveDown(.5).fontSize(10).fillColor('#333333');
+      doc.text(`Invoice ID: ${invoice.invoiceId}`);doc.text(`Buyer: ${invoice.buyerName||'—'}`);doc.text(`Date: ${invoice.date||invoice.createdAt||new Date().toLocaleString('en-IN')}`);
+      if(metadata.originalInvoiceId){doc.text(`Replaces invoice: ${metadata.originalInvoiceId}`);doc.text(`Replacement count for this invoice chain: ${metadata.replacementCount??replacementCount(metadata.originalInvoiceId)}`);}
+      doc.text(`Template: ${tpl.name}`);
       doc.moveDown().fontSize(12).fillColor(accent).text('PRODUCTS');doc.moveDown(.3).fillColor('#111827').fontSize(10);
-      for(const p of (invoice.products||[])){
-        doc.text(`${String(p.name||'Product').slice(0,100)}  |  Qty: ${Number(p.qty)||0}  |  Unit price: INR ${Number(p.price||0).toFixed(2)}  |  Total: INR ${((Number(p.qty)||0)*(Number(p.price)||0)).toFixed(2)}`);
-      }
-      doc.moveDown().fontSize(10);doc.text(`Payable: INR ${Number(invoice.payable||0).toFixed(2)}`);doc.text(`Paid: INR ${Number(invoice.totalPaid||0).toFixed(2)}`);doc.text(`Balance: INR ${Number(invoice.needToPay||0).toFixed(2)}`);
-      if(metadata.isReplacement){doc.moveDown().fillColor('#b45309').text('This document was issued as a replacement for the original invoice shown above.');}
+      doc.moveTo(48,doc.y).lineTo(547,doc.y).strokeColor(accent).stroke();doc.moveDown(.5);
+      for(const p of (invoice.products||[])){doc.text(`${String(p.name||'Product').slice(0,100)}  |  Qty: ${Number(p.qty)||0}  |  Unit price: INR ${Number(p.price||0).toFixed(2)}  |  Total: INR ${((Number(p.qty)||0)*(Number(p.price)||0)).toFixed(2)}`);}
+      doc.moveDown().fontSize(10).fillColor('#111827');doc.text(`Subtotal: INR ${Number(invoice.subtotal||0).toFixed(2)}`);doc.text(`Payable: INR ${Number(invoice.payable||invoice.total||0).toFixed(2)}`);doc.text(`Paid: INR ${Number(invoice.totalPaid||0).toFixed(2)}`);doc.text(`Balance: INR ${Number(invoice.needToPay||0).toFixed(2)}`);
+      if(metadata.isReplacement){doc.moveDown().fontSize(9).fillColor(accent).text('REPLACEMENT COPY — retain the new invoice ID for future support requests.');}
+      doc.moveDown(2).fontSize(9).fillColor(accent).text(`${tpl.brand} • ${String(invoice.footerName||tpl.brand).slice(0,80)}`,{align:'center'});
       doc.end();
     } catch(e){reject(e);}
   });
 }
 async function getTranscript(channel, ticket) {
-  const lines=[`Ticket Transcript #${ticket.id}`,`Invoice ID: ${ticket.invoice_id}`,`Product: ${ticket.product_name}`,`Issue: ${ticket.issue_type}`,`Opened by: ${ticket.opener_id}`,`Created: ${ticket.created_at}`,`Closed: ${new Date().toISOString()}`,'','Messages:'];
+  const lines=[]; const header=`<header><h1>Support Ticket Transcript #${ticket.id}</h1><p><b>Invoice:</b> ${escapeHtml(ticket.invoice_id)} &nbsp; <b>Product:</b> ${escapeHtml(ticket.product_name)}</p><p><b>Issue:</b> ${escapeHtml(ticket.issue_type)} &nbsp; <b>Opened by:</b> ${escapeHtml(ticket.opener_id)}</p><p><b>Created:</b> ${escapeHtml(ticket.created_at)} &nbsp; <b>Closed:</b> ${escapeHtml(new Date().toISOString())}</p></header>`;
   let before, fetchedCount=0;
   try {
     while(fetchedCount<500){
       const batch=await channel.messages.fetch({limit:100,...(before?{before}:{})});if(!batch.size)break;
       const ordered=[...batch.values()].sort((a,b)=>a.createdTimestamp-b.createdTimestamp);
-      for(const m of ordered){lines.push(`[${new Date(m.createdTimestamp).toISOString()}] ${m.author?.tag||m.author?.username||'Unknown'} (${m.author?.id||'?' }): ${m.content||'[no text]'}`);for(const a of m.attachments.values())lines.push(`  Attachment: ${a.url}`);}
+      for(const m of ordered){const at=new Date(m.createdTimestamp).toLocaleString('en-IN');const attachments=[...m.attachments.values()].map(a=>`<p><a href="${escapeHtml(a.url)}">Attachment: ${escapeHtml(a.name||a.url)}</a></p>`).join('');lines.push(`<article><div class="meta">${escapeHtml(at)} · ${escapeHtml(m.author?.tag||m.author?.username||'Unknown')} (${escapeHtml(m.author?.id||'?')})</div><div class="content">${escapeHtml(m.content||'[no text]').replace(/\n/g,'<br>')}</div>${attachments}</article>`);}
       fetchedCount+=batch.size;before=batch.last()?.id;if(batch.size<100)break;
     }
-  } catch(e){lines.push(`Transcript fetch warning: ${e.message}`);}
-  return Buffer.from(lines.join('\n').slice(0,180000),'utf8');
+  } catch(e){lines.push(`<article>Transcript fetch warning: ${escapeHtml(e.message)}</article>`);}
+  const html=`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Ticket #${ticket.id} transcript</title><style>body{font:15px/1.55 Arial,sans-serif;background:#f2f4f8;color:#172033;margin:0;padding:28px}main{max-width:900px;margin:auto;background:white;border-radius:18px;padding:28px;box-shadow:0 8px 30px #17203318}header{background:linear-gradient(135deg,#222b4a,#6b4eff);color:white;padding:24px;border-radius:14px;margin-bottom:22px}article{padding:14px 16px;border:1px solid #e1e6ef;border-radius:10px;margin:12px 0;overflow-wrap:anywhere}.meta{font-size:12px;color:#64748b;margin-bottom:8px}.content{white-space:normal}a{color:#365bcb}footer{margin-top:24px;color:#64748b;font-size:12px}</style></head><body><main>${header}<h2>Conversation</h2>${lines.join('')}<footer>Generated by the support ticket system.</footer></main></body></html>`;
+  return Buffer.from(html.slice(0,900000),'utf8');
 }
 async function sendTranscriptToUsers(guild, ticket, transcript, closerId) {
   const recipients=new Set([ticket.opener_id,closerId].filter(Boolean));
   if(ticket.claimed_by)recipients.add(ticket.claimed_by);
-  const attachment=new AttachmentBuilder(transcript,{name:`ticket-${ticket.id}-transcript.txt`});
+  const attachment=new AttachmentBuilder(transcript,{name:`ticket-${ticket.id}-transcript.html`});
   for(const userId of recipients){try{const user=await bot.users.fetch(userId);await user.send({content:`Transcript for closed ticket #${ticket.id} (Invoice ${ticket.invoice_id}).`,files:[attachment]});}catch(e){console.warn(`Could not DM transcript to ${userId}: ${e.message}`);}}
   const logId=process.env.TICKET_LOG_CHANNEL_ID;
-  if(logId){try{const log=await guild.channels.fetch(logId);if(log?.isTextBased())await log.send({content:`Ticket #${ticket.id} closed by <@${closerId}>. Invoice: ${ticket.invoice_id}.`,files:[new AttachmentBuilder(transcript,{name:`ticket-${ticket.id}-transcript.txt`})]});}catch(e){console.warn('Could not post ticket transcript to log channel:',e.message);}}
+  if(logId){try{const log=await guild.channels.fetch(logId);if(log?.isTextBased())await log.send({content:`Ticket #${ticket.id} closed by <@${closerId}>. Invoice: ${ticket.invoice_id}.`,files:[new AttachmentBuilder(transcript,{name:`ticket-${ticket.id}-transcript.html`})]});}catch(e){console.warn('Could not post ticket transcript to log channel:',e.message);}}
 }
 async function startTicket(interaction,invoiceId,productIndex,issueType) {
   const invoice=getInvoice(invoiceId); if(!invoice) return respondInteraction(interaction,{content:'Invoice record no longer exists. Save the invoice again and retry.',ephemeral:true});
@@ -306,12 +328,15 @@ async function startBot(){
      const originalId=interaction.options.getString('invoice_id',true).trim();const original=getInvoice(originalId);
      if(!original)return interaction.editReply(`No saved invoice found for ${originalId}.`);
      const newId=makeInvoiceId();
-     const templateName=String(original.templateName||original.template||original.invoiceTemplate||original.themeName||'Default template');
-     const replacement={...original,invoiceId:newId,documentType:'REPLACEMENT INVOICE',replacementOf:original.invoiceId,templateName,createdAt:new Date().toISOString(),savedAt:new Date().toISOString()};
+     const tpl=getTemplate(original);const templateName=tpl.name;const count=replacementCount(original.invoiceId)+1;
+     const replacement={...original,invoiceId:newId,documentType:'REPLACEMENT INVOICE',replacementOf:original.invoiceId,templateName,brandName:tpl.brand,sellerName:tpl.brand,shopName:tpl.brand,theme:tpl.theme,themeColor:tpl.accent,primaryColor:tpl.accent,watermark:tpl.watermark,createdAt:new Date().toISOString(),savedAt:new Date().toISOString(),replacementCount:count};
      saveInvoice(replacement);
      db.prepare('INSERT INTO invoice_replacements(new_invoice_id,original_invoice_id,ticket_id,created_by,template_name,created_at) VALUES(?,?,?,?,?,?)').run(newId,original.invoiceId,null,interaction.user.id,templateName,new Date().toISOString());
-     const pdf=await createInvoicePdfBuffer(replacement,{isReplacement:true,originalInvoiceId:original.invoiceId,templateName});
-     let dmSent=false;try{const buyer=await bot.users.fetch(String(original.discordUserId||original.buyerDiscordId||''));if(buyer?.id){await buyer.send({content:`Your replacement invoice has been created.\n**New Invoice ID:** ${newId}\n**Replaces Invoice:** ${original.invoiceId}\n**Template:** ${templateName}`,files:[new AttachmentBuilder(pdf,{name:`replacement-${newId}.pdf`})]});dmSent=true;}}catch(e){console.warn('Could not DM replacement invoice using invoice Discord user ID:',e.message);}
+     const pdf=await createInvoicePdfBuffer(replacement,{isReplacement:true,originalInvoiceId:original.invoiceId,templateName,replacementCount:count});
+     let dmSent=false;try{const buyer=await bot.users.fetch(String(original.discordUserId||original.buyerDiscordId||''));if(buyer?.id){await buyer.send({content:`Your replacement invoice has been created.\n**New Invoice ID:** ${newId}\n**Replaces Invoice:** ${original.invoiceId}\n**Template:** ${templateName}
+**Replacement number:** ${count}
+**Replacements in this chain:** ${count}
+**Next time:** use the newest invoice ID if you need another replacement.`,files:[new AttachmentBuilder(pdf,{name:`replacement-${newId}.pdf`})]});dmSent=true;}}catch(e){console.warn('Could not DM replacement invoice using invoice Discord user ID:',e.message);}
      return interaction.editReply(`Replacement invoice created.\n**New Invoice ID:** ${newId}\n**Original Invoice:** ${original.invoiceId}\n**Template:** ${templateName}\n**PDF:** ${dmSent?'DM sent.':'Generated, but buyer DM was not sent because no usable Discord user ID is saved on this invoice. Use the ticket replacement button to DM the ticket opener.'}`);
     }
     if(interaction.commandName==='invoice-inspect'){
@@ -348,14 +373,14 @@ async function startBot(){
       if(ticket.status==='closed')return interaction.reply({content:'This ticket is closed. Reopen it before creating a replacement.',ephemeral:true});
       await interaction.deferReply({flags:MessageFlags.Ephemeral});
       const original=getInvoice(ticket.invoice_id);if(!original)return interaction.editReply('Original invoice was not found in the database.');
-      const newId=makeInvoiceId();const templateName=String(original.templateName||original.template||original.invoiceTemplate||original.themeName||'Default template');
-      const replacement={...original,invoiceId:newId,documentType:'REPLACEMENT INVOICE',replacementOf:original.invoiceId,templateName,createdAt:new Date().toISOString(),savedAt:new Date().toISOString()};
+      const newId=makeInvoiceId();const tpl=getTemplate(original);const templateName=tpl.name;const count=replacementCount(original.invoiceId)+1;
+      const replacement={...original,invoiceId:newId,documentType:'REPLACEMENT INVOICE',replacementOf:original.invoiceId,templateName,brandName:tpl.brand,sellerName:tpl.brand,shopName:tpl.brand,theme:tpl.theme,themeColor:tpl.accent,primaryColor:tpl.accent,watermark:tpl.watermark,createdAt:new Date().toISOString(),savedAt:new Date().toISOString(),replacementCount:count};
       saveInvoice(replacement);
       db.prepare('INSERT INTO invoice_replacements(new_invoice_id,original_invoice_id,ticket_id,created_by,template_name,created_at) VALUES(?,?,?,?,?,?)').run(newId,original.invoiceId,ticket.id,interaction.user.id,templateName,new Date().toISOString());
-      const pdf=await createInvoicePdfBuffer(replacement,{isReplacement:true,originalInvoiceId:original.invoiceId,templateName});
-      let dmSent=false;try{const buyer=await bot.users.fetch(ticket.opener_id);await buyer.send({content:`Your replacement is ready.\n**New Invoice ID:** ${newId}\n**Replaces Invoice:** ${original.invoiceId}\n**Template:** ${templateName}\nIf you have another issue, use this new invoice ID in the Invoice Support Panel.`,files:[new AttachmentBuilder(pdf,{name:`replacement-${newId}.pdf`})]});dmSent=true;}catch(e){console.warn('Replacement invoice DM failed:',e.message);}
-      await channel.send({content:`♻️ Replacement invoice created.\n**New Invoice ID:** \`${newId}\`\n**Original Invoice:** \`${original.invoiceId}\`\n**Template:** ${templateName}\n**PDF DM:** ${dmSent?'Sent to ticket opener.':'Could not DM member; check their privacy settings.'}`,allowedMentions:{parse:[]}});
-      return interaction.editReply(`Replacement invoice: ${newId}\nOriginal invoice: ${original.invoiceId}\nTemplate: ${templateName}\nPDF DM: ${dmSent?'Sent':'Failed — the member may have DMs disabled'}.`);
+      const pdf=await createInvoicePdfBuffer(replacement,{isReplacement:true,originalInvoiceId:original.invoiceId,templateName,replacementCount:count});
+      let dmSent=false;try{const buyer=await bot.users.fetch(ticket.opener_id);await buyer.send({content:`Your replacement is ready.\n**New Invoice ID:** ${newId}\n**Replaces Invoice:** ${original.invoiceId}\n**Template:** ${templateName}\n**Replacement number:** ${count}\n**Total replacements in this chain:** ${count}\nIf you have another issue, use this newest invoice ID in the Invoice Support Panel.`,files:[new AttachmentBuilder(pdf,{name:`replacement-${newId}.pdf`})]});dmSent=true;}catch(e){console.warn('Replacement invoice DM failed:',e.message);}
+      await channel.send({content:`♻️ Replacement invoice created.\n**New Invoice ID:** \`${newId}\`\n**Original Invoice:** \`${original.invoiceId}\`\n**Template:** ${templateName}\n**Replacement number:** ${count}\n**Total replacements in this chain:** ${count}\n**PDF DM:** ${dmSent?'Sent to ticket opener.':'Could not DM member; check their privacy settings.'}`,allowedMentions:{parse:[]}});
+      return interaction.editReply(`Replacement invoice: ${newId}\nOriginal invoice: ${original.invoiceId}\nTemplate: ${templateName}\nReplacement number: ${count}\nTotal replacements in this chain: ${count}\nPDF DM: ${dmSent?'Sent':'Failed — the member may have DMs disabled'}.`);
     }
     if(action==='ticketdetails'){
       if(!canSeeSecrets(interaction,ticket))return interaction.reply({content:'For account safety, only the claimed ticket staff member and server owner can view account details.',ephemeral:true});
