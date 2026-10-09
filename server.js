@@ -11,7 +11,7 @@ const {
   AttachmentBuilder, ActionRowBuilder, StringSelectMenuBuilder,
   ButtonBuilder, ButtonStyle, UserSelectMenuBuilder, ChannelType, ModalBuilder, TextInputBuilder, TextInputStyle,
   PermissionFlagsBits, MessageFlags, ContainerBuilder, TextDisplayBuilder,
-  SeparatorBuilder, EmbedBuilder
+  SeparatorBuilder, EmbedBuilder, MediaGalleryBuilder, MediaGalleryItemBuilder
 } = require('discord.js');
 
 const app = express();
@@ -148,34 +148,39 @@ async function steamSearch(query) {
   else if(item.price?.final!=null) steamPrice=`₹${(Number(item.price.final)/100).toFixed(2)}`;
   return {appId,name:detail?.name||item.name||query,steamPrice,description:String(detail?.short_description||'').replace(/<[^>]*>/g,'').slice(0,350),header:detail?.header_image||item.tiny_image||null,storeUrl:`https://store.steampowered.com/app/${appId}/`,steamDbUrl:`https://steamdb.info/app/${appId}/`};
 }
-function gameResultComponents(game, listedPrice) {
-  const row=new ActionRowBuilder();
-  row.addComponents(new ButtonBuilder().setLabel('Open Ticket').setStyle(ButtonStyle.Primary).setCustomId(`gameopen:${game.appId}`));
-  row.addComponents(new ButtonBuilder().setLabel('Steam Store').setStyle(ButtonStyle.Link).setURL(game.storeUrl));
-  row.addComponents(new ButtonBuilder().setLabel('SteamDB Details').setStyle(ButtonStyle.Link).setURL(game.steamDbUrl));
-  return row;
+function gameResultComponents(game, priceRow) {
+  // Components V2 card: image + only the four requested details; no buttons or coloured embed.
+  const container = new ContainerBuilder();
+  if (game.header) {
+    container.addMediaGalleryComponents(
+      new MediaGalleryBuilder().addItems(
+        new MediaGalleryItemBuilder().setURL(game.header).setDescription(game.name)
+      )
+    );
+  }
+  const ourPrice = priceRow ? rupees(priceRow.our_price) : 'Not listed';
+  container.addTextDisplayComponents(new TextDisplayBuilder().setContent(
+    `## ${game.name}\n**Steam Price:** ${game.steamPrice}\n**Our Price:** ${ourPrice}\n**Game ID:** ${game.appId}`
+  ));
+  return container;
 }
 function gameResultEmbed(game, priceRow) {
-  const ourPrice=priceRow ? rupees(priceRow.our_price) : 'Not listed';
-  const description=[game.description||'Steam store details were not available for this title.', '', `**Steam Price (India):** ${game.steamPrice}`, `**Our Price:** ${ourPrice}`, priceRow ? '' : 'Our price has not been added yet. Tap **Open Ticket** to ask our team for the price.'].filter(Boolean).join('\n');
-  const embed=new EmbedBuilder().setColor(0xf5b400).setTitle(game.name).setDescription(description).addFields({name:'Game ID',value:game.appId,inline:true},{name:'Price status',value:priceRow?'Listed':'Ask our team',inline:true}).setFooter({text:'Steam store details • SteamDB link included'});
-  if(game.header)embed.setThumbnail(game.header);
-  embed.setURL(game.storeUrl);
-  return embed;
+  // Kept as a compatibility helper; game lookup sends the V2 container above.
+  return gameResultComponents(game, priceRow);
 }
-function gameStickyEmbed(){
- return new EmbedBuilder().setColor(0xf5b400).setTitle('🎮 Check Our Game Price List').setDescription('**Need to know our price for a game?**\nJust type the **game name** in this channel and the bot will show the Steam price and our listed price.\n\nIf our price is not listed, press **Open Ticket** to ask our team.').setFooter({text:'Game price lookup works only in this channel.'});
+function gameStickyMessage() {
+  return '**🎮 GAME PRICE LIST**\nNeed to know our price list? Just type your game name here.';
 }
 async function bumpGameSticky(channel){
   try {
     const row=db.prepare('SELECT setting_value FROM bot_settings WHERE setting_key=?').get(GAME_STICKY_KEY);
     if(row?.setting_value){const old=await channel.messages.fetch(row.setting_value).catch(()=>null);if(old)await old.delete().catch(()=>{});}
-    const msg=await channel.send({embeds:[gameStickyEmbed()]});
+    const msg=await channel.send({content:gameStickyMessage(),allowedMentions:{parse:[]}});
     db.prepare('INSERT INTO bot_settings(setting_key,setting_value) VALUES(?,?) ON CONFLICT(setting_key) DO UPDATE SET setting_value=excluded.setting_value').run(GAME_STICKY_KEY,msg.id);
   } catch(e){console.error('Could not refresh game-price sticky message:',e.message);}
 }
 async function ensureGameSticky(){
-  try {const channel=await bot.channels.fetch(GAME_PRICE_CHANNEL_ID);if(!channel?.isTextBased())return;const row=db.prepare('SELECT setting_value FROM bot_settings WHERE setting_key=?').get(GAME_STICKY_KEY);const existing=row?.setting_value?await channel.messages.fetch(row.setting_value).catch(()=>null):null;if(!existing)await bumpGameSticky(channel);} catch(e){console.error('Could not initialize game-price channel sticky:',e.message);}
+  try {const channel=await bot.channels.fetch(GAME_PRICE_CHANNEL_ID);if(!channel?.isTextBased())return;const row=db.prepare('SELECT setting_value FROM bot_settings WHERE setting_key=?').get(GAME_STICKY_KEY);const existing=row?.setting_value?await channel.messages.fetch(row.setting_value).catch(()=>null):null;if(!existing)await bumpGameSticky(channel);else if(existing.embeds?.length){await existing.delete().catch(()=>{});await bumpGameSticky(channel);}} catch(e){console.error('Could not initialize game-price channel sticky:',e.message);}
 }
 async function createGameInquiryTicket(interaction, appId){
   const game=await steamSearchById(appId);
@@ -228,11 +233,6 @@ async function startBot(){
      const details=`**Invoice:** ${short(record.invoiceId)}\n**Buyer:** ${short(record.buyerName)}\n**Shop:** ${short(record.sellerName||record.shopName||'Not specified')}\n**Type:** ${short(record.documentType||'INVOICE')}\n**Created:** ${short(record.date||record.savedAt||'—')}\n**Products:** ${(record.products||[]).length}\n**Payable:** ₹${Number(record.payable||0).toFixed(2)}\n**Paid:** ₹${Number(record.totalPaid||0).toFixed(2)}\n**Balance:** ₹${Number(record.needToPay||0).toFixed(2)}\n\n${products}`;
      return interaction.reply(v2Card(`Admin Invoice Inspect • ${short(record.invoiceId,80)}`,details));
     }
-   }
-   if(interaction.isButton() && interaction.customId.startsWith('gameopen:')){
-    if(interaction.channelId!==GAME_PRICE_CHANNEL_ID)return interaction.reply({content:'Game price lookup buttons only work in the configured game-price channel.',ephemeral:true});
-    await interaction.deferReply({ephemeral:true});
-    try{return await createGameInquiryTicket(interaction,interaction.customId.split(':')[1]);}catch(e){console.error('Game inquiry ticket failed:',e);return interaction.editReply('Could not create the game inquiry ticket. Please contact staff.');}
    }
    if(interaction.isButton() && interaction.customId==='invoicepanel:open'){
     const modal=new ModalBuilder().setCustomId('invoicepanel:submit').setTitle('Find Your Invoice');
@@ -310,15 +310,16 @@ async function startBot(){
   if(!message.guild||message.author.bot||message.channelId!==GAME_PRICE_CHANNEL_ID)return;
   const query=String(message.content||'').trim();
   try {
-    // Only ordinary short text messages are treated as game-name searches. Bot commands and chat filler are ignored.
     const cleaned=query.replace(/<@!?\d+>/g,'').replace(/https?:\/\/\S+/gi,'').trim();
     const normalized=cleaned.toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
-    const shouldSearch=cleaned.length>=2&&cleaned.length<=90&&!cleaned.startsWith('/')&&!GAME_IGNORE.has(normalized)&&!/^\d+$/.test(normalized);
+    const shouldSearch=cleaned.length>=2&&cleaned.length<=90&&!cleaned.startsWith('/')&&!GAME_IGNORE.has(normalized)&&!/^[0-9]+$/.test(normalized);
     if(shouldSearch){
       const game=await steamSearch(cleaned);
       if(game){
         const price=db.prepare('SELECT our_price,game_name FROM game_prices WHERE app_id=?').get(game.appId);
-        await message.channel.send({embeds:[gameResultEmbed(game,price)],components:[gameResultComponents(game,price)],allowedMentions:{parse:[]}});
+        // Remove the user's typed game name, then show a clean Components V2 result without buttons.
+        await message.delete().catch(e=>console.warn('Could not delete game search message; check Manage Messages permission:',e.message));
+        await message.channel.send({components:[gameResultComponents(game,price)],flags:MessageFlags.IsComponentsV2,allowedMentions:{parse:[]}});
       }
     }
   } catch(e){console.error('Game name lookup failed:',e.message);}

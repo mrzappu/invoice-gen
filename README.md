@@ -11,8 +11,8 @@ Node.js/Express website and Discord bot. Invoice records and private product cre
 - Private credentials are revealed ephemerally only to the ticket claimant or server owner.
 - `/resize`: resize an attached image to 3840×2160 PNG using Contain or Cover.
 - Game-price lookup in Discord channel `1529155314887163986`: members type a game name to see Steam India pricing, game details, and SteamDB/Steam links.
-- `/game-price game_name:<title> our_price:<INR>` lets staff set/update the shop price. Re-run it to edit; use `0` to remove the listed price. If no shop price is set, the response shows “Our Price: Not listed” and an **Open Ticket** button.
-- A sticky instruction embed is automatically maintained in the configured game-price channel. Set `GAME_PRICE_CHANNEL_ID` to override the default channel ID.
+- `/game-price game_name:<title> our_price:<INR>` lets staff set/update the shop price. Re-run it to edit; use `0` to remove the listed price. If no shop price is set, the response shows “Our Price: Not listed”. The game result is a plain Components V2 card with only the game image, name, Steam price, our price, and Steam Game ID; it has no buttons or coloured embed.
+- A normal-text sticky instruction message is automatically maintained in the configured game-price channel. When a Steam game is found, the member’s typed search message is deleted and replaced with a Components V2 result card. Set `GAME_PRICE_CHANNEL_ID` to override the default channel ID. Discord only allows “Only you can see this / Dismiss message” ephemeral responses for interactions (such as slash commands or button clicks), not for ordinary typed messages.
 
 ## Local setup
 1. Install Node.js 22.22.0.
@@ -48,7 +48,7 @@ Enter optional account email/ID and password in the product row. They are stored
 
 ## Game-price channel setup
 1. Enable **Message Content Intent** for the bot in the Discord Developer Portal (Bot settings).
-2. Ensure the bot can View Channel, Read Message History, Send Messages, Embed Links, and Manage Messages in the game-price channel. Manage Messages is needed to move the sticky note to the bottom after member messages.
+2. Ensure the bot can View Channel, Read Message History, Send Messages, Embed Links, and Manage Messages in the game-price channel. Manage Messages is needed to delete typed game searches and move the normal-text sticky note to the bottom after member messages. The bot also needs Message Content Intent enabled in the Discord Developer Portal.
 3. Deploy the code, then in the target channel type a game title. Members can only trigger lookups in the configured channel.
 4. Staff use `/game-price game_name:<Steam game title> our_price:<INR>` to set or edit your shop price. Use `0` to clear it.
 
