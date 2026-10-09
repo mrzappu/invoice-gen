@@ -169,7 +169,18 @@ function gameResultEmbed(game, priceRow) {
   return gameResultComponents(game, priceRow);
 }
 function gameStickyMessage() {
-  return '**🎮 GAME PRICE LIST**\nNeed to know our price list? Just type your game name here.';
+  return [
+    '╭・🎮 **GAME PRICE CHECKER**',
+    '│',
+    '│  Want to check a game price?',
+    '│  Run **`/game`** and enter the game name.',
+    '│',
+    '│  🖼️ Game image  ・  🎮 Name',
+    '│  💰 Steam price  ・  🏷️ Our price',
+    '│  🆔 Game ID',
+    '│',
+    '╰・🔒 Results are private — only you can see them.'
+  ].join('\n');
 }
 async function bumpGameSticky(channel){
   try {
@@ -202,21 +213,35 @@ async function startBot(){
   new SlashCommandBuilder().setName('resize').setDescription('Resize an image to 3840×2160 and return PNG').addAttachmentOption(o=>o.setName('image').setDescription('Image to resize').setRequired(true)).addStringOption(o=>o.setName('fit').setDescription('How to fit the image').addChoices({name:'Contain (no crop)',value:'contain'},{name:'Cover (crop edges)',value:'cover'})),
   new SlashCommandBuilder().setName('invoice-panel').setDescription('Open the invoice support panel'),
   new SlashCommandBuilder().setName('invoice-inspect').setDescription('Admin: inspect a saved invoice').addStringOption(o=>o.setName('invoice_id').setDescription('Invoice ID to inspect').setRequired(true)),
+  new SlashCommandBuilder().setName('game').setDescription('Privately check a Steam game price').addStringOption(o=>o.setName('game_name').setDescription('Game name to search on Steam').setRequired(true).setMaxLength(90)),
   new SlashCommandBuilder().setName('game-price').setDescription('Admin: set or update the listed price for a Steam game').addStringOption(o=>o.setName('game_name').setDescription('Exact game name').setRequired(true)).addNumberOption(o=>o.setName('our_price').setDescription('Your price in INR (0 removes the listed price)').setRequired(true).setMinValue(0).setMaxValue(1000000))
  ].map(c=>c.toJSON());
- bot.once('ready',async()=>{console.log(`Discord bot logged in as ${bot.user.tag}`);await ensureGameSticky();try{const rest=new REST({version:'10'}).setToken(process.env.DISCORD_TOKEN);if(process.env.GUILD_ID&&process.env.CLIENT_ID){await rest.put(Routes.applicationGuildCommands(process.env.CLIENT_ID,process.env.GUILD_ID),{body:commands});console.log('Guild slash commands registered.');}else if(process.env.CLIENT_ID){await rest.put(Routes.applicationCommands(process.env.CLIENT_ID),{body:commands});console.log('Global slash commands registered.');}else console.warn('CLIENT_ID missing; slash commands were not registered.');}catch(e){console.error('Command registration failed:',e);}});
+ bot.once('ready',async()=>{console.log(`Discord bot logged in as ${bot.user.tag}`);await ensureGameSticky();try{const rest=new REST({version:'10'}).setToken(process.env.DISCORD_TOKEN);if(process.env.GUILD_ID&&process.env.CLIENT_ID){await rest.put(Routes.applicationGuildCommands(process.env.CLIENT_ID,process.env.GUILD_ID),{body:commands});console.log(`Guild slash commands registered for guild ${process.env.GUILD_ID}: /game, /game-price and other commands.`);}else if(process.env.CLIENT_ID){await rest.put(Routes.applicationCommands(process.env.CLIENT_ID),{body:commands});console.log('Global slash commands registered. Global command updates may take time to appear; set GUILD_ID for fast testing.');}else console.error('CLIENT_ID is missing: slash commands cannot be registered. Add CLIENT_ID in Render Environment, then restart/redeploy.');}catch(e){console.error('Command registration failed:',e);}});
  bot.on('interactionCreate',async interaction=>{
   try{
    if(interaction.isChatInputCommand()){
     if(interaction.commandName==='resize'){
      await interaction.deferReply();try{const file=interaction.options.getAttachment('image');if(!file.contentType?.startsWith('image/'))return interaction.editReply('Please attach a valid image.');if(file.size>15*1024*1024)return interaction.editReply('Image must be 15 MB or smaller.');const response=await fetch(file.url);if(!response.ok)throw new Error('Could not download image');const input=Buffer.from(await response.arrayBuffer());const fit=interaction.options.getString('fit')||'contain';const png=await sharp(input,{failOn:'none'}).rotate().resize(3840,2160,{fit:fit==='cover'?'cover':'contain',background:{r:15,g:18,b:32,alpha:1}}).png({compressionLevel:8}).toBuffer();await interaction.editReply({content:`Done — **3840 × 2160 px** PNG. Fit: **${fit}**.`,files:[new AttachmentBuilder(png,{name:'resized-3840x2160.png'})]});}catch(e){console.error('Resize failed',e);await interaction.editReply('Could not resize this image. Use JPG, PNG or WebP under 15 MB.');}
     }
+    if(interaction.commandName==='game'){
+     await interaction.deferReply({flags:MessageFlags.Ephemeral|MessageFlags.IsComponentsV2});
+     const name=interaction.options.getString('game_name',true).trim();
+     try {
+       const game=await steamSearch(name);
+       if(!game)return interaction.editReply({content:`No Steam game found for \"${name}\". Check the title and try again.`});
+       const price=db.prepare('SELECT our_price FROM game_prices WHERE app_id=?').get(game.appId);
+       const container=new ContainerBuilder();
+       if(game.header){container.addMediaGalleryComponents(new MediaGalleryBuilder().addItems(new MediaGalleryItemBuilder().setURL(game.header).setDescription(game.name)));}
+       container.addTextDisplayComponents(new TextDisplayBuilder().setContent(`## ${game.name}\n**Steam Price:** ${game.steamPrice}\n**Our Price:** ${price?rupees(price.our_price):'Not listed'}\n**Game ID:** ${game.appId}`));
+       return interaction.editReply({components:[container]});
+     } catch(e){console.error('Private game lookup failed:',e);return interaction.editReply({content:'Could not fetch Steam details right now. Please try again shortly.'});}
+    }
     if(interaction.commandName==='game-price'){
      if(!isStaff(interaction))return interaction.reply({content:'Only server staff or the server owner can edit game prices.',ephemeral:true});
-     await interaction.deferReply({ephemeral:true});
+     await interaction.deferReply({flags:MessageFlags.Ephemeral|MessageFlags.IsComponentsV2});
      const name=interaction.options.getString('game_name',true).trim();const price=interaction.options.getNumber('our_price',true);
      try {const game=await steamSearch(name);if(!game)return interaction.editReply(`No Steam game found for **${name}**. Check the title and try again.`);
-       if(price===0){db.prepare('DELETE FROM game_prices WHERE app_id=?').run(game.appId);return interaction.editReply(`Removed the listed price for **${game.name}**. Members will now see **Our Price: Not listed** and an **Open Ticket** button.`);}
+       if(price===0){db.prepare('DELETE FROM game_prices WHERE app_id=?').run(game.appId);return interaction.editReply(`Removed the listed price for **${game.name}**. The /game command will show **Our Price: Not listed**.`);}
        db.prepare('INSERT INTO game_prices(app_id,game_name,our_price,updated_by,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(app_id) DO UPDATE SET game_name=excluded.game_name,our_price=excluded.our_price,updated_by=excluded.updated_by,updated_at=excluded.updated_at').run(game.appId,game.name,price,interaction.user.id,new Date().toISOString());
        return interaction.editReply(`Updated price for **${game.name}**.\nSteam Price (India): **${game.steamPrice}**\nOur Price: **${rupees(price)}**\nGame ID: ${game.appId}`);
      }catch(e){console.error('Game price update failed:',e);return interaction.editReply('Could not fetch Steam details right now. Try again in a minute.');}
@@ -308,22 +333,8 @@ async function startBot(){
  });
  bot.on('messageCreate',async message=>{
   if(!message.guild||message.author.bot||message.channelId!==GAME_PRICE_CHANNEL_ID)return;
-  const query=String(message.content||'').trim();
-  try {
-    const cleaned=query.replace(/<@!?\d+>/g,'').replace(/https?:\/\/\S+/gi,'').trim();
-    const normalized=cleaned.toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
-    const shouldSearch=cleaned.length>=2&&cleaned.length<=90&&!cleaned.startsWith('/')&&!GAME_IGNORE.has(normalized)&&!/^[0-9]+$/.test(normalized);
-    if(shouldSearch){
-      const game=await steamSearch(cleaned);
-      if(game){
-        const price=db.prepare('SELECT our_price,game_name FROM game_prices WHERE app_id=?').get(game.appId);
-        // Remove the user's typed game name, then show a clean Components V2 result without buttons.
-        await message.delete().catch(e=>console.warn('Could not delete game search message; check Manage Messages permission:',e.message));
-        await message.channel.send({components:[gameResultComponents(game,price)],flags:MessageFlags.IsComponentsV2,allowedMentions:{parse:[]}});
-      }
-    }
-  } catch(e){console.error('Game name lookup failed:',e.message);}
-  finally { await bumpGameSticky(message.channel); }
+  // Keep the instruction post at the bottom. Game lookups are private through /game.
+  await bumpGameSticky(message.channel);
  });
  bot.on('error',e=>console.error('Discord client error:',e));await bot.login(process.env.DISCORD_TOKEN);
 }

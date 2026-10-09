@@ -10,9 +10,9 @@ Node.js/Express website and Discord bot. Invoice records and private product cre
 - Ticket controls in a Discord Components V2 container: Claim, Close, Reopen, Account Details, Add user, Remove user.
 - Private credentials are revealed ephemerally only to the ticket claimant or server owner.
 - `/resize`: resize an attached image to 3840×2160 PNG using Contain or Cover.
-- Game-price lookup in Discord channel `1529155314887163986`: members type a game name to see Steam India pricing, game details, and SteamDB/Steam links.
+- Private `/game game_name:<title>` command: search a Steam game and show a private Components V2 result (game image, game name, Steam India price, Our Price, and Game ID only). Discord displays “Only you can see this · Dismiss message”.
 - `/game-price game_name:<title> our_price:<INR>` lets staff set/update the shop price. Re-run it to edit; use `0` to remove the listed price. If no shop price is set, the response shows “Our Price: Not listed”. The game result is a plain Components V2 card with only the game image, name, Steam price, our price, and Steam Game ID; it has no buttons or coloured embed.
-- A normal-text sticky instruction message is automatically maintained in the configured game-price channel. When a Steam game is found, the member’s typed search message is deleted and replaced with a Components V2 result card. Set `GAME_PRICE_CHANNEL_ID` to override the default channel ID. Discord only allows “Only you can see this / Dismiss message” ephemeral responses for interactions (such as slash commands or button clicks), not for ordinary typed messages.
+- A styled normal-text sticky instruction message is automatically maintained in the configured game-price channel. Members use `/game` for private results; ordinary typed messages do not trigger public game lookups. Set `GAME_PRICE_CHANNEL_ID` to override the default channel ID.
 
 ## Local setup
 1. Install Node.js 22.22.0.
@@ -48,9 +48,10 @@ Enter optional account email/ID and password in the product row. They are stored
 
 ## Game-price channel setup
 1. Enable **Message Content Intent** for the bot in the Discord Developer Portal (Bot settings).
-2. Ensure the bot can View Channel, Read Message History, Send Messages, Embed Links, and Manage Messages in the game-price channel. Manage Messages is needed to delete typed game searches and move the normal-text sticky note to the bottom after member messages. The bot also needs Message Content Intent enabled in the Discord Developer Portal.
-3. Deploy the code, then in the target channel type a game title. Members can only trigger lookups in the configured channel.
-4. Staff use `/game-price game_name:<Steam game title> our_price:<INR>` to set or edit your shop price. Use `0` to clear it.
+2. Ensure the bot can View Channel, Read Message History, Send Messages, Embed Links, and Manage Messages in the game-price channel. Manage Messages is needed to move the normal-text sticky note to the bottom after member messages. The bot also needs Message Content Intent enabled in the Discord Developer Portal.
+3. Set `CLIENT_ID` to the Discord application ID. Set `GUILD_ID` to your server ID to register slash commands quickly for that server. Restart/redeploy and check Render logs for “Guild slash commands registered”.
+4. In the target channel, run `/game` and fill the `game_name` option. The reply is ephemeral/private and has the “Dismiss message” UI.
+5. Staff use `/game-price game_name:<Steam game title> our_price:<INR>` to set or edit your shop price. Use `0` to clear it.
 
 Game details/prices are retrieved from Steam’s store endpoints, and each result includes a SteamDB details link. SteamDB says it has no public API and does not allow automated scraping, so the bot does not scrape SteamDB directly. Steam store pricing can change with sales and region settings.
 
