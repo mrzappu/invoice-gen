@@ -2,7 +2,9 @@
 const $ = id => document.getElementById(id);
 const fields = ['preset','theme','brandName','sellerName','tagline','watermark','footerName','showWatermark','docType','buyerName','handledBy','paymentMethod','charges','discountType','discountValue','previousCash','newCash','sealTop','sealMid','sealBottom','showSeal','contact','signerName','signatureStyle','showSignature','terms'];
 const presets = {
- standard:{theme:'standard',brandName:'YOUR SHOP',sellerName:'Your Shop',tagline:'Digital Products • Games • Services',watermark:'YOUR SHOP',footerName:'Your Shop',sealTop:'YOUR',sealMid:'★ RECEIVED ★',sealBottom:'SHOP',showSeal:true,showWatermark:true,showSignature:true}
+ standard:{theme:'standard',brandName:'YOUR SHOP',sellerName:'Your Shop',tagline:'Digital Products • Games • Services',watermark:'YOUR SHOP',footerName:'Your Shop',sealTop:'YOUR',sealMid:'★ RECEIVED ★',sealBottom:'SHOP',showSeal:true,showWatermark:true,showSignature:true},
+ gojo:{theme:'blue',brandName:"GOJO'S STEAM LOUNGE",sellerName:"GOJO'S STEAM LOUNGE",tagline:'STEAM GAMES • DIGITAL DELIVERY • SUPPORT',watermark:"GOJO'S STEAM LOUNGE",footerName:"GOJO'S STEAM LOUNGE",sealTop:'GOJO',sealMid:'★ VERIFIED ★',sealBottom:'GAMES',showSeal:true,showWatermark:true,showSignature:true},
+ imposter:{theme:'purple',brandName:'IMPOSTER NETWORK',sellerName:'IMPOSTER NETWORK',tagline:'DIGITAL PRODUCTS • GAMES • SERVICES',watermark:'IMPOSTER NETWORK',footerName:'IMPOSTER NETWORK',sealTop:'IMPOSTER',sealMid:'★ VERIFIED ★',sealBottom:'NETWORK',showSeal:true,showWatermark:true,showSignature:true}
 };
 let invoiceId = makeInvoiceId();
 function makeInvoiceId(){return 'INV-'+Date.now().toString().slice(-10)}
