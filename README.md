@@ -82,3 +82,16 @@ Do not commit production credentials or a database containing customer/account p
 - The ticket **Close** button now permits the opener, assigned claimant, configured staff/admin, or server owner. It builds a text transcript before deletion, attempts to DM it to the opener, closer, and claimant, optionally posts a copy to `TICKET_LOG_CHANNEL_ID`, then deletes the ticket channel after a short delay. The bot needs Manage Channels, Read Message History, and permission to DM recipients (recipients can have DMs disabled).
 - Set optional `TICKET_LOG_CHANNEL_ID` to a staff-only text channel if you want an archived transcript even when DMs fail.
 - `/invoice-panel` posts a public panel; invoice lookup results and ticket creation confirmations remain private where appropriate.
+
+
+## Buyer identity, replacement chain, and owner-channel delivery
+
+- The invoice website has a **Buyer Discord User ID** field. Save the invoice after entering the ID so the bot can DM replacement PDFs to that buyer.
+- New invoices save their selected preset (`Standard`, `Gojo's Steam Lounge`, or `IMPOSTER NETWORK`), theme colour, watermark, and footer branding. Replacement invoices inherit that saved template and colour scheme. The generated PDF uses the matching brand/accent colour and watermark setting.
+- Each invoice ID can be replaced only once. The new replacement invoice ID can then be used for one further replacement, so replacements form a chain; the bot blocks replacing the same ID twice and reports the replacement count.
+- Configure `REPLACEMENT_OWNER_CHANNEL_ID` (or `OWNER_CHANNEL_ID`) to a private staff/owner channel. Replacement records are sent there with the buyer, original/new invoice IDs, product, and spoiler-hidden account email/password. Restrict that channel to trusted staff because it can contain account credentials.
+- `/invoice-replacement invoice_id:<ID>` creates a replacement from a saved invoice. Optional `account_email` and `account_password` values are accepted for the replacement account and are stored only in the private invoice/ticket database and sent as spoiler-hidden values to the configured owner channel and buyer DM where possible. Avoid running this command in a public channel because slash-command option values may be visible to channel members; use it in a private staff channel.
+- Replacement DMs include the PDF, the new invoice ID, the previous ID, replacement count, template name, and spoiler-hidden credentials when available. A DM can fail if the buyer has DMs disabled.
+- HTML ticket transcripts show profile avatars, display names, usernames, Discord user IDs, timestamps, message text, and attachment links.
+
+Back up your production database before deployment. The ZIP's `invoice.db` is a snapshot and may not contain the latest production invoices.
