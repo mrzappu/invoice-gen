@@ -53,3 +53,10 @@ This project pins Node.js **22.22.0** in `.node-version`, `package.json`, and `r
 
 Do not commit production credentials or a database containing customer/account passwords to a public repository. Render's free filesystem is ephemeral, so configure persistent storage or a managed database for production records.
 
+
+## Updated Discord panel and ticket permissions
+- `/invoice-panel` posts a button panel. Users press **Search Invoice / Open Ticket**, enter the invoice ID in a modal, then choose the product and ticket reason.
+- `/invoice-inspect invoice_id:<ID>` is for server administrators, members with **Manage Channels**, the configured `STAFF_ROLE_ID`, and the server owner. It shows saved invoice totals and product/account details ephemerally.
+- Staff can claim unclaimed tickets. The assigned claimant can unclaim their own ticket. The server owner can unclaim or take over a ticket claimed by another staff member.
+- The ticket opener, assigned claimant, or server owner can close a ticket. Only the assigned claimant or server owner can reopen it.
+- Set `STAFF_ROLE_ID` in Render to your staff role ID. The bot needs permission to create/manage channels and manage channel overwrites. Re-deploy after updating the source so Discord refreshes the slash commands.

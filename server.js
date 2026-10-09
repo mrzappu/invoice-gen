@@ -9,7 +9,7 @@ const Database = require('better-sqlite3');
 const {
   Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder,
   AttachmentBuilder, ActionRowBuilder, StringSelectMenuBuilder,
-  ButtonBuilder, ButtonStyle, UserSelectMenuBuilder, ChannelType,
+  ButtonBuilder, ButtonStyle, UserSelectMenuBuilder, ChannelType, ModalBuilder, TextInputBuilder, TextInputStyle,
   PermissionFlagsBits, MessageFlags, ContainerBuilder, TextDisplayBuilder,
   SeparatorBuilder
 } = require('discord.js');
@@ -88,9 +88,10 @@ function selectProduct(invoice) {
     .setPlaceholder('Select product').addOptions((products.length?products:[{name:'No product listed'}]).map((p,i)=>({label:short(p.name||`Product ${i+1}`,100),value:String(i),description:`Qty ${Number(p.qty)||1} • ₹${(Number(p.price)||0).toFixed(2)}`}))));
 }
 function issueSelect(invoiceId,productIndex) {return new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId(`ticketissue:${invoiceId}:${productIndex}`).setPlaceholder('Choose ticket reason').addOptions(issueTypes.map(x=>({label:x,value:x.toLowerCase(),description:`Open a ${x.toLowerCase()} support ticket`}))));}
-function ticketControls(ticketId,status='open') {
+function ticketControls(ticketId,status='open',claimedBy=null) {
   const row=new ActionRowBuilder();
-  row.addComponents(new ButtonBuilder().setCustomId(`ticketclaim:${ticketId}`).setLabel('Claim').setStyle(ButtonStyle.Primary).setDisabled(status!=='open'));
+  row.addComponents(new ButtonBuilder().setCustomId(`ticketclaim:${ticketId}`).setLabel(claimedBy?'Claimed / Take Over':'Claim').setStyle(ButtonStyle.Primary).setDisabled(status!=='open'));
+  row.addComponents(new ButtonBuilder().setCustomId(`ticketunclaim:${ticketId}`).setLabel('Unclaim').setStyle(ButtonStyle.Secondary).setDisabled(!claimedBy||status==='closed'));
   row.addComponents(new ButtonBuilder().setCustomId(`ticketclose:${ticketId}`).setLabel('Close').setStyle(ButtonStyle.Danger).setDisabled(status==='closed'));
   row.addComponents(new ButtonBuilder().setCustomId(`ticketreopen:${ticketId}`).setLabel('Reopen').setStyle(ButtonStyle.Success).setDisabled(status!=='closed'));
   row.addComponents(new ButtonBuilder().setCustomId(`ticketdetails:${ticketId}`).setLabel('Account Details').setStyle(ButtonStyle.Secondary));
@@ -100,6 +101,7 @@ function ticketControls(ticketId,status='open') {
 }
 function ticketById(id){return db.prepare('SELECT * FROM tickets WHERE id=?').get(Number(id));}
 function isOwner(interaction){return Boolean(interaction.guild && interaction.guild.ownerId===interaction.user.id);}
+function isStaff(interaction){const roleId=process.env.STAFF_ROLE_ID;return isOwner(interaction)||Boolean(interaction.memberPermissions?.has(PermissionFlagsBits.ManageChannels)||interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)||(roleId&&interaction.member?.roles?.cache?.has(roleId)));}
 function canSeeSecrets(interaction,ticket){return isOwner(interaction)||ticket.claimed_by===interaction.user.id;}
 async function startTicket(interaction,invoiceId,productIndex,issueType) {
   const invoice=getInvoice(invoiceId); if(!invoice) return interaction.reply({content:'Invoice record no longer exists. Save the invoice again and retry.',ephemeral:true});
@@ -113,7 +115,7 @@ async function startTicket(interaction,invoiceId,productIndex,issueType) {
   const result=db.prepare('INSERT INTO tickets(invoice_id,guild_id,channel_id,opener_id,product_name,issue_type,status,created_at,product_index) VALUES(?,?,?,?,?,?,?,?,?)').run(invoiceId,guild.id,channel.id,interaction.user.id,product.name,issueType,'open',now,Number(productIndex));
   const ticketId=Number(result.lastInsertRowid);
   const body=`**Ticket:** #${ticketId}\n**Invoice ID:** ${invoiceId}\n**Buyer:** ${short(invoice.buyerName)}\n**Product:** ${short(product.name)}\n**Reason:** ${issueType}\n**Opened by:** <@${interaction.user.id}>\n\nAccount credentials are private. Only the ticket claimant and server owner can reveal them.`;
-  await channel.send({components:[new ContainerBuilder().setAccentColor(0xf5b400).addTextDisplayComponents(new TextDisplayBuilder().setContent(`## Imposter Network Support Ticket\n${body}`)).addSeparatorComponents(new SeparatorBuilder()).addActionRowComponents(...ticketControls(ticketId))],flags:MessageFlags.IsComponentsV2});
+  await channel.send({components:[new ContainerBuilder().setAccentColor(0xf5b400).addTextDisplayComponents(new TextDisplayBuilder().setContent(`## Imposter Network Support Ticket\n${body}`)).addSeparatorComponents(new SeparatorBuilder()).addActionRowComponents(...ticketControls(ticketId,'open',null))],flags:MessageFlags.IsComponentsV2});
   return interaction.reply({content:`Ticket created: ${channel}`,ephemeral:true});
 }
 async function startBot(){
@@ -121,7 +123,8 @@ async function startBot(){
  bot=new Client({intents:[GatewayIntentBits.Guilds]});
  const commands=[
   new SlashCommandBuilder().setName('resize').setDescription('Resize an image to 3840×2160 and return PNG').addAttachmentOption(o=>o.setName('image').setDescription('Image to resize').setRequired(true)).addStringOption(o=>o.setName('fit').setDescription('How to fit the image').addChoices({name:'Contain (no crop)',value:'contain'},{name:'Cover (crop edges)',value:'cover'})),
-  new SlashCommandBuilder().setName('invoice-search').setDescription('Find invoice and start a support ticket').addStringOption(o=>o.setName('invoice_id').setDescription('Invoice ID, e.g. IMP-123456').setRequired(true))
+  new SlashCommandBuilder().setName('invoice-panel').setDescription('Open the invoice support panel'),
+  new SlashCommandBuilder().setName('invoice-inspect').setDescription('Admin: inspect a saved invoice').addStringOption(o=>o.setName('invoice_id').setDescription('Invoice ID to inspect').setRequired(true))
  ].map(c=>c.toJSON());
  bot.once('ready',async()=>{console.log(`Discord bot logged in as ${bot.user.tag}`);try{const rest=new REST({version:'10'}).setToken(process.env.DISCORD_TOKEN);if(process.env.GUILD_ID&&process.env.CLIENT_ID){await rest.put(Routes.applicationGuildCommands(process.env.CLIENT_ID,process.env.GUILD_ID),{body:commands});console.log('Guild slash commands registered.');}else if(process.env.CLIENT_ID){await rest.put(Routes.applicationCommands(process.env.CLIENT_ID),{body:commands});console.log('Global slash commands registered.');}else console.warn('CLIENT_ID missing; slash commands were not registered.');}catch(e){console.error('Command registration failed:',e);}});
  bot.on('interactionCreate',async interaction=>{
@@ -130,11 +133,29 @@ async function startBot(){
     if(interaction.commandName==='resize'){
      await interaction.deferReply();try{const file=interaction.options.getAttachment('image');if(!file.contentType?.startsWith('image/'))return interaction.editReply('Please attach a valid image.');if(file.size>15*1024*1024)return interaction.editReply('Image must be 15 MB or smaller.');const response=await fetch(file.url);if(!response.ok)throw new Error('Could not download image');const input=Buffer.from(await response.arrayBuffer());const fit=interaction.options.getString('fit')||'contain';const png=await sharp(input,{failOn:'none'}).rotate().resize(3840,2160,{fit:fit==='cover'?'cover':'contain',background:{r:15,g:18,b:32,alpha:1}}).png({compressionLevel:8}).toBuffer();await interaction.editReply({content:`Done — **3840 × 2160 px** PNG. Fit: **${fit}**.`,files:[new AttachmentBuilder(png,{name:'resized-3840x2160.png'})]});}catch(e){console.error('Resize failed',e);await interaction.editReply('Could not resize this image. Use JPG, PNG or WebP under 15 MB.');}
     }
-    if(interaction.commandName==='invoice-search'){
-     const typed=interaction.options.getString('invoice_id',true).trim();const record=getInvoice(typed);
-     if(!record)return interaction.reply({content:`No saved invoice found for **${typed}**. Make sure you clicked **Save to lookup** on the website and that the invoice ID matches exactly.`,ephemeral:true});
-     return interaction.reply(v2Card(`Invoice ${record.invoiceId}`,`**Buyer:** ${short(record.buyerName)}\n**Shop:** ${short(record.sellerName||record.shopName||'Imposter Network')}\n**Type:** ${short(record.documentType||'INVOICE')}\n**Products:** ${(record.products||[]).length}\n**Payable:** ₹${Number(record.payable||0).toFixed(2)}\n**Paid:** ₹${Number(record.totalPaid||0).toFixed(2)}\n**Balance:** ₹${Number(record.needToPay||0).toFixed(2)}\n\nSelect the buyer, then product, then ticket reason.`,[selectInvoiceBuyer(record)]));
+    if(interaction.commandName==='invoice-panel'){
+     const row=new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('invoicepanel:open').setLabel('Search Invoice / Open Ticket').setStyle(ButtonStyle.Primary));
+     return interaction.reply(v2Card('Imposter Network • Support Panel','Press the button below, enter your invoice ID, then select the product and issue type to create a private support ticket.',[row]));
     }
+    if(interaction.commandName==='invoice-inspect'){
+     if(!isStaff(interaction))return interaction.reply({content:'Only server administrators, staff with Manage Channels, configured staff role, or the server owner can inspect invoices.',ephemeral:true});
+     const typed=interaction.options.getString('invoice_id',true).trim();const record=getInvoice(typed);
+     if(!record)return interaction.reply({content:`No saved invoice found for **${typed}**. Make sure it was saved to lookup.`,ephemeral:true});
+     const products=(record.products||[]).map((p,i)=>`**${i+1}. ${short(p.name,80)}** — Qty ${Number(p.qty)||0} × ₹${Number(p.price||0).toFixed(2)}${p.accountEmail?'\nEmail / ID: ||'+String(p.accountEmail).slice(0,120)+'||':''}${p.accountPassword?'\nPassword: ||'+String(p.accountPassword).slice(0,120)+'||':''}`).join('\n\n')||'No products';
+     const details=`**Invoice:** ${short(record.invoiceId)}\n**Buyer:** ${short(record.buyerName)}\n**Shop:** ${short(record.sellerName||record.shopName||'Imposter Network')}\n**Type:** ${short(record.documentType||'INVOICE')}\n**Created:** ${short(record.date||record.savedAt||'—')}\n**Products:** ${(record.products||[]).length}\n**Payable:** ₹${Number(record.payable||0).toFixed(2)}\n**Paid:** ₹${Number(record.totalPaid||0).toFixed(2)}\n**Balance:** ₹${Number(record.needToPay||0).toFixed(2)}\n\n${products}`;
+     return interaction.reply(v2Card(`Admin Invoice Inspect • ${short(record.invoiceId,80)}`,details));
+    }
+   }
+   if(interaction.isButton() && interaction.customId==='invoicepanel:open'){
+    const modal=new ModalBuilder().setCustomId('invoicepanel:submit').setTitle('Find Your Invoice');
+    const input=new TextInputBuilder().setCustomId('invoice_id').setLabel('Invoice ID').setPlaceholder('Enter the exact invoice ID').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(100);
+    modal.addComponents(new ActionRowBuilder().addComponents(input));
+    return interaction.showModal(modal);
+   }
+   if(interaction.isModalSubmit() && interaction.customId==='invoicepanel:submit'){
+    const typed=interaction.fields.getTextInputValue('invoice_id').trim();const record=getInvoice(typed);
+    if(!record)return interaction.reply({content:`No saved invoice found for **${typed}**. Check the ID and make sure the invoice was saved to lookup.`,ephemeral:true});
+    return interaction.reply(v2Card(`Invoice ${record.invoiceId}`,`**Buyer:** ${short(record.buyerName)}\n**Shop:** ${short(record.sellerName||record.shopName||'Imposter Network')}\n**Type:** ${short(record.documentType||'INVOICE')}\n**Products:** ${(record.products||[]).length}\n**Payable:** ₹${Number(record.payable||0).toFixed(2)}\n**Paid:** ₹${Number(record.totalPaid||0).toFixed(2)}\n**Balance:** ₹${Number(record.needToPay||0).toFixed(2)}\n\nSelect the buyer, then product, then ticket reason.`,[selectInvoiceBuyer(record)]));
    }
    if(interaction.isStringSelectMenu()){
     const [kind,...parts]=interaction.customId.split(':');
@@ -152,17 +173,40 @@ async function startBot(){
       return interaction.reply({content:`🔐 **Private account details — ${ticket.invoice_id}**\n**Product:** ${short(ticket.product_name)}\n**Email / ID:** ||${String(email).slice(0,900)}||\n**Password:** ||${String(password).slice(0,900)}||\n\nDo not share these details outside this ticket.`,ephemeral:true});
     }
     if(action==='ticketclaim'){
-      if(ticket.status!=='open')return interaction.reply({content:'Only open tickets can be claimed.',ephemeral:true});
-      if(ticket.claimed_by && ticket.claimed_by!==interaction.user.id && !isOwner(interaction))return interaction.reply({content:`Already claimed by <@${ticket.claimed_by}>.`,ephemeral:true});
-      db.prepare('UPDATE tickets SET claimed_by=? WHERE id=?').run(interaction.user.id,ticket.id);await channel.send(`🛡️ Ticket claimed by <@${interaction.user.id}>.`);return interaction.reply({content:'You claimed this ticket. You and the server owner can now view account details.',ephemeral:true});
+      if(!isStaff(interaction))return interaction.reply({content:'Only staff members or the server owner can claim tickets.',ephemeral:true});
+      if(ticket.status!=='open')return interaction.reply({content:'Closed tickets cannot be claimed. Reopen the ticket first.',ephemeral:true});
+      if(ticket.claimed_by && ticket.claimed_by!==interaction.user.id && !isOwner(interaction))return interaction.reply({content:`Already claimed by <@${ticket.claimed_by}>. Only the server owner can take over or unclaim another staff member's ticket.`,ephemeral:true});
+      if(ticket.claimed_by===interaction.user.id)return interaction.reply({content:'You already claimed this ticket.',ephemeral:true});
+      db.prepare('UPDATE tickets SET claimed_by=? WHERE id=?').run(interaction.user.id,ticket.id);
+      await channel.send(ticket.claimed_by && ticket.claimed_by!==interaction.user.id ? `👑 Server owner <@${interaction.user.id}> took over this ticket from <@${ticket.claimed_by}>.` : `🛡️ Ticket claimed by <@${interaction.user.id}>.`);
+      await interaction.message.edit({components:[new ContainerBuilder().setAccentColor(0xf5b400).addTextDisplayComponents(new TextDisplayBuilder().setContent(`## Support Ticket #${ticket.id}\n**Invoice:** ${ticket.invoice_id}\n**Product:** ${short(ticket.product_name)}\n**Status:** OPEN\n**Claimed by:** <@${interaction.user.id}>`)).addSeparatorComponents(new SeparatorBuilder()).addActionRowComponents(...ticketControls(ticket.id,'open',interaction.user.id))]}).catch(()=>{});
+      return interaction.reply({content:'Ticket claimed. You and the server owner can view account details.',ephemeral:true});
+    }
+    if(action==='ticketunclaim'){
+      if(!ticket.claimed_by)return interaction.reply({content:'This ticket is not currently claimed.',ephemeral:true});
+      if(!isOwner(interaction)&&ticket.claimed_by!==interaction.user.id)return interaction.reply({content:'Only the assigned claimant or server owner can unclaim this ticket.',ephemeral:true});
+      db.prepare('UPDATE tickets SET claimed_by=NULL WHERE id=?').run(ticket.id);
+      await channel.send(`↩️ Ticket unclaimed by <@${interaction.user.id}>. It is available for staff to claim.`);
+      await interaction.message.edit({components:[new ContainerBuilder().setAccentColor(0xf5b400).addTextDisplayComponents(new TextDisplayBuilder().setContent(`## Support Ticket #${ticket.id}\n**Invoice:** ${ticket.invoice_id}\n**Product:** ${short(ticket.product_name)}\n**Status:** ${ticket.status.toUpperCase()}\n**Claimed by:** Unclaimed`)).addSeparatorComponents(new SeparatorBuilder()).addActionRowComponents(...ticketControls(ticket.id,ticket.status,null))]}).catch(()=>{});
+      return interaction.reply({content:'Ticket unclaimed and available to staff.',ephemeral:true});
     }
     if(action==='ticketclose'){
-      if(!isOwner(interaction)&&ticket.opener_id!==interaction.user.id&&ticket.claimed_by!==interaction.user.id)return interaction.reply({content:'Only the ticket opener, claimant, or server owner can close this ticket.',ephemeral:true});
-      db.prepare("UPDATE tickets SET status='closed',closed_at=? WHERE id=?").run(new Date().toISOString(),ticket.id);await channel.permissionOverwrites.edit(ticket.opener_id,{SendMessages:false});await channel.send('🔒 Ticket closed. A staff member or server owner can reopen it.');return interaction.reply({content:'Ticket closed.',ephemeral:true});
+      if(!isOwner(interaction)&&ticket.opener_id!==interaction.user.id&&ticket.claimed_by!==interaction.user.id)return interaction.reply({content:'Only the ticket opener, assigned claimant, or server owner can close this ticket.',ephemeral:true});
+      if(ticket.status==='closed')return interaction.reply({content:'This ticket is already closed.',ephemeral:true});
+      db.prepare("UPDATE tickets SET status='closed',closed_at=? WHERE id=?").run(new Date().toISOString(),ticket.id);
+      await channel.permissionOverwrites.edit(ticket.opener_id,{SendMessages:false}).catch(()=>{});
+      await channel.send('🔒 Ticket closed. The assigned claimant or server owner can reopen it.');
+      await interaction.message.edit({components:[new ContainerBuilder().setAccentColor(0x747f8d).addTextDisplayComponents(new TextDisplayBuilder().setContent(`## Support Ticket #${ticket.id}\n**Invoice:** ${ticket.invoice_id}\n**Product:** ${short(ticket.product_name)}\n**Status:** CLOSED\n**Claimed by:** ${ticket.claimed_by?`<@${ticket.claimed_by}>`:'Unclaimed'}`)).addSeparatorComponents(new SeparatorBuilder()).addActionRowComponents(...ticketControls(ticket.id,'closed',ticket.claimed_by))]}).catch(()=>{});
+      return interaction.reply({content:'Ticket closed successfully.',ephemeral:true});
     }
     if(action==='ticketreopen'){
-      if(!isOwner(interaction)&&ticket.claimed_by!==interaction.user.id)return interaction.reply({content:'Only the claimant or server owner can reopen this ticket.',ephemeral:true});
-      db.prepare("UPDATE tickets SET status='open',closed_at=NULL WHERE id=?").run(ticket.id);await channel.permissionOverwrites.edit(ticket.opener_id,{SendMessages:true});await channel.send('🔓 Ticket reopened.');return interaction.reply({content:'Ticket reopened.',ephemeral:true});
+      if(!isOwner(interaction)&&ticket.claimed_by!==interaction.user.id)return interaction.reply({content:'Only the assigned claimant or server owner can reopen this ticket.',ephemeral:true});
+      if(ticket.status!=='closed')return interaction.reply({content:'This ticket is already open.',ephemeral:true});
+      db.prepare("UPDATE tickets SET status='open',closed_at=NULL WHERE id=?").run(ticket.id);
+      await channel.permissionOverwrites.edit(ticket.opener_id,{ViewChannel:true,SendMessages:true,ReadMessageHistory:true}).catch(()=>{});
+      await channel.send('🔓 Ticket reopened.');
+      await interaction.message.edit({components:[new ContainerBuilder().setAccentColor(0xf5b400).addTextDisplayComponents(new TextDisplayBuilder().setContent(`## Support Ticket #${ticket.id}\n**Invoice:** ${ticket.invoice_id}\n**Product:** ${short(ticket.product_name)}\n**Status:** OPEN\n**Claimed by:** ${ticket.claimed_by?`<@${ticket.claimed_by}>`:'Unclaimed'}`)).addSeparatorComponents(new SeparatorBuilder()).addActionRowComponents(...ticketControls(ticket.id,'open',ticket.claimed_by))]}).catch(()=>{});
+      return interaction.reply({content:'Ticket reopened successfully.',ephemeral:true});
     }
    }
    if(interaction.isUserSelectMenu()){
