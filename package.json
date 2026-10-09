@@ -1,7 +1,7 @@
 {
-  "name": "inet-invoice-discord-bot",
+  "name": "invoice-discord-bot",
   "version": "1.1.0",
-  "description": "Imposter Network invoice generator, SQLite invoice storage, Discord support tickets and image resizing",
+  "description": "Invoice generator, SQLite invoice storage, Discord support tickets, Steam game price lookup and image resizing",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"

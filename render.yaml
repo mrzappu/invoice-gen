@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: inet-invoice-bot
+    name: invoice-discord-bot
     runtime: node
     plan: free
     buildCommand: npm install

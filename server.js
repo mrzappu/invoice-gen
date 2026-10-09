@@ -11,7 +11,7 @@ const {
   AttachmentBuilder, ActionRowBuilder, StringSelectMenuBuilder,
   ButtonBuilder, ButtonStyle, UserSelectMenuBuilder, ChannelType, ModalBuilder, TextInputBuilder, TextInputStyle,
   PermissionFlagsBits, MessageFlags, ContainerBuilder, TextDisplayBuilder,
-  SeparatorBuilder
+  SeparatorBuilder, EmbedBuilder
 } = require('discord.js');
 
 const app = express();
@@ -36,6 +36,8 @@ CREATE TABLE IF NOT EXISTS tickets (
 );
 CREATE INDEX IF NOT EXISTS idx_tickets_invoice ON tickets(invoice_id);
 CREATE INDEX IF NOT EXISTS idx_tickets_channel ON tickets(channel_id);
+CREATE TABLE IF NOT EXISTS game_prices (app_id TEXT PRIMARY KEY, game_name TEXT NOT NULL, our_price REAL NOT NULL, updated_by TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS bot_settings (setting_key TEXT PRIMARY KEY, setting_value TEXT NOT NULL);
 `);
 try { db.exec('ALTER TABLE tickets ADD COLUMN product_index INTEGER NOT NULL DEFAULT 0'); } catch (e) { if (!String(e.message).includes('duplicate column name')) throw e; }
 app.use(express.json({ limit: '2mb' }));
@@ -64,7 +66,7 @@ function saveInvoice(body) {
 for (const legacyFile of [path.join(__dirname, 'invoices.json'), path.join(__dirname, 'data', 'invoices.json'), path.join(DATA_DIR, 'invoices.json')]) {
   try { if (fs.existsSync(legacyFile)) { const legacy = JSON.parse(fs.readFileSync(legacyFile, 'utf8')); if (Array.isArray(legacy)) for (const item of legacy) { if (item && item.invoiceId && item.buyerName && !getInvoice(item.invoiceId)) saveInvoice(item); } console.log(`Imported legacy invoice records from ${legacyFile}`); } } catch (e) { console.warn(`Could not import ${legacyFile}: ${e.message}`); }
 }
-app.get('/health',(_req,res)=>res.status(200).json({ok:true,service:'inet-invoice-bot',database:'sqlite'}));
+app.get('/health',(_req,res)=>res.status(200).json({ok:true,service:'invoice-bot',database:'sqlite'}));
 app.get('/api/invoices/:id',apiAuth,(req,res)=>{const found=getInvoice(req.params.id);if(!found)return res.status(404).json({error:'Invoice not found.'});const safe={...found,products:(found.products||[]).map(({accountEmail,accountPassword,...p})=>p)};res.json(safe);});
 app.post('/api/invoices',apiAuth,(req,res)=>{try{const record=saveInvoice(req.body||{});res.status(201).json({ok:true,invoiceId:record.invoiceId,savedAt:record.savedAt});}catch(e){res.status(400).json({error:e.message||'Could not save invoice.'});}});
 // Sensitive product credentials are not returned by the public invoice API and are never rendered into invoice exports.
@@ -103,10 +105,11 @@ function ticketById(id){return db.prepare('SELECT * FROM tickets WHERE id=?').ge
 function isOwner(interaction){return Boolean(interaction.guild && interaction.guild.ownerId===interaction.user.id);}
 function isStaff(interaction){const roleId=process.env.STAFF_ROLE_ID;return isOwner(interaction)||Boolean(interaction.memberPermissions?.has(PermissionFlagsBits.ManageChannels)||interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)||(roleId&&interaction.member?.roles?.cache?.has(roleId)));}
 function canSeeSecrets(interaction,ticket){return isOwner(interaction)||ticket.claimed_by===interaction.user.id;}
+async function respondInteraction(interaction,payload){ if(interaction.deferred) return interaction.editReply(payload); if(interaction.replied) return interaction.followUp(payload); return interaction.reply(payload); }
 async function startTicket(interaction,invoiceId,productIndex,issueType) {
-  const invoice=getInvoice(invoiceId); if(!invoice) return interaction.reply({content:'Invoice record no longer exists. Save the invoice again and retry.',ephemeral:true});
-  const product=(invoice.products||[])[Number(productIndex)]; if(!product) return interaction.reply({content:'Product not found on this invoice.',ephemeral:true});
-  const guild=interaction.guild; if(!guild)return interaction.reply({content:'Tickets can only be created inside a server.',ephemeral:true});
+  const invoice=getInvoice(invoiceId); if(!invoice) return respondInteraction(interaction,{content:'Invoice record no longer exists. Save the invoice again and retry.',ephemeral:true});
+  const product=(invoice.products||[])[Number(productIndex)]; if(!product) return respondInteraction(interaction,{content:'Product not found on this invoice.',ephemeral:true});
+  const guild=interaction.guild; if(!guild)return respondInteraction(interaction,{content:'Tickets can only be created inside a server.',ephemeral:true});
   const staffRoleId=process.env.STAFF_ROLE_ID;
   const overwrites=[{id:guild.roles.everyone.id,deny:[PermissionFlagsBits.ViewChannel]},{id:interaction.user.id,allow:[PermissionFlagsBits.ViewChannel,PermissionFlagsBits.SendMessages,PermissionFlagsBits.ReadMessageHistory,PermissionFlagsBits.AttachFiles]}];
   if(staffRoleId)overwrites.push({id:staffRoleId,allow:[PermissionFlagsBits.ViewChannel,PermissionFlagsBits.SendMessages,PermissionFlagsBits.ReadMessageHistory,PermissionFlagsBits.ManageMessages]});
@@ -115,36 +118,121 @@ async function startTicket(interaction,invoiceId,productIndex,issueType) {
   const result=db.prepare('INSERT INTO tickets(invoice_id,guild_id,channel_id,opener_id,product_name,issue_type,status,created_at,product_index) VALUES(?,?,?,?,?,?,?,?,?)').run(invoiceId,guild.id,channel.id,interaction.user.id,product.name,issueType,'open',now,Number(productIndex));
   const ticketId=Number(result.lastInsertRowid);
   const body=`**Ticket:** #${ticketId}\n**Invoice ID:** ${invoiceId}\n**Buyer:** ${short(invoice.buyerName)}\n**Product:** ${short(product.name)}\n**Reason:** ${issueType}\n**Opened by:** <@${interaction.user.id}>\n\nAccount credentials are private. Only the ticket claimant and server owner can reveal them.`;
-  await channel.send({components:[new ContainerBuilder().setAccentColor(0xf5b400).addTextDisplayComponents(new TextDisplayBuilder().setContent(`## Imposter Network Support Ticket\n${body}`)).addSeparatorComponents(new SeparatorBuilder()).addActionRowComponents(...ticketControls(ticketId,'open',null))],flags:MessageFlags.IsComponentsV2});
-  return interaction.reply({content:`Ticket created: ${channel}`,ephemeral:true});
+  await channel.send({components:[new ContainerBuilder().setAccentColor(0xf5b400).addTextDisplayComponents(new TextDisplayBuilder().setContent(`## Support Ticket\n${body}`)).addSeparatorComponents(new SeparatorBuilder()).addActionRowComponents(...ticketControls(ticketId,'open',null))],flags:MessageFlags.IsComponentsV2});
+  return respondInteraction(interaction,{content:`Ticket created: ${channel}`,ephemeral:true});
 }
+const GAME_PRICE_CHANNEL_ID = process.env.GAME_PRICE_CHANNEL_ID || '1529155314887163986';
+const GAME_STICKY_KEY = `game_price_sticky_message_${GAME_PRICE_CHANNEL_ID}`;
+const GAME_IGNORE = new Set(['hi','hello','hey','help','price','prices','steam','game','games','test','ok','okay','thanks','thank you','yo','gm','gn','good morning','good night']);
+function rupees(value) { return `₹${Number(value||0).toLocaleString('en-IN',{maximumFractionDigits:2})}`; }
+async function steamSearch(query) {
+  const url = `https://store.steampowered.com/api/storesearch/?term=${encodeURIComponent(query)}&l=english&cc=in`;
+  const response = await fetch(url, {headers:{'User-Agent':'Steam-Price-Lookup-Bot/1.0'}});
+  if(!response.ok) throw new Error(`Steam search HTTP ${response.status}`);
+  const data = await response.json();
+  const items = Array.isArray(data.items) ? data.items : [];
+  if(!items.length) return null;
+  const norm = v => String(v||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+  const wanted=norm(query);
+  const item=items.find(x=>norm(x.name)===wanted) || items.find(x=>norm(x.name).includes(wanted)||wanted.includes(norm(x.name))) || items[0];
+  const appId=String(item.id);
+  let detail=null;
+  try {
+    const detailResponse=await fetch(`https://store.steampowered.com/api/appdetails?appids=${encodeURIComponent(appId)}&cc=in&l=english`,{headers:{'User-Agent':'Steam-Price-Lookup-Bot/1.0'}});
+    if(detailResponse.ok){const d=await detailResponse.json();if(d[appId]?.success)detail=d[appId].data;}
+  } catch(e) { console.warn('Steam app details lookup failed:',e.message); }
+  let steamPrice='Not available';
+  if(detail?.is_free) steamPrice='Free to Play';
+  else if(detail?.price_overview?.final_formatted) steamPrice=detail.price_overview.final_formatted;
+  else if(item.price?.final_formatted) steamPrice=item.price.final_formatted;
+  else if(item.price?.final!=null) steamPrice=`₹${(Number(item.price.final)/100).toFixed(2)}`;
+  return {appId,name:detail?.name||item.name||query,steamPrice,description:String(detail?.short_description||'').replace(/<[^>]*>/g,'').slice(0,350),header:detail?.header_image||item.tiny_image||null,storeUrl:`https://store.steampowered.com/app/${appId}/`,steamDbUrl:`https://steamdb.info/app/${appId}/`};
+}
+function gameResultComponents(game, listedPrice) {
+  const row=new ActionRowBuilder();
+  row.addComponents(new ButtonBuilder().setLabel('Open Ticket').setStyle(ButtonStyle.Primary).setCustomId(`gameopen:${game.appId}`));
+  row.addComponents(new ButtonBuilder().setLabel('Steam Store').setStyle(ButtonStyle.Link).setURL(game.storeUrl));
+  row.addComponents(new ButtonBuilder().setLabel('SteamDB Details').setStyle(ButtonStyle.Link).setURL(game.steamDbUrl));
+  return row;
+}
+function gameResultEmbed(game, priceRow) {
+  const ourPrice=priceRow ? rupees(priceRow.our_price) : 'Not listed';
+  const description=[game.description||'Steam store details were not available for this title.', '', `**Steam Price (India):** ${game.steamPrice}`, `**Our Price:** ${ourPrice}`, priceRow ? '' : 'Our price has not been added yet. Tap **Open Ticket** to ask our team for the price.'].filter(Boolean).join('\n');
+  const embed=new EmbedBuilder().setColor(0xf5b400).setTitle(game.name).setDescription(description).addFields({name:'Game ID',value:game.appId,inline:true},{name:'Price status',value:priceRow?'Listed':'Ask our team',inline:true}).setFooter({text:'Steam store details • SteamDB link included'});
+  if(game.header)embed.setThumbnail(game.header);
+  embed.setURL(game.storeUrl);
+  return embed;
+}
+function gameStickyEmbed(){
+ return new EmbedBuilder().setColor(0xf5b400).setTitle('🎮 Check Our Game Price List').setDescription('**Need to know our price for a game?**\nJust type the **game name** in this channel and the bot will show the Steam price and our listed price.\n\nIf our price is not listed, press **Open Ticket** to ask our team.').setFooter({text:'Game price lookup works only in this channel.'});
+}
+async function bumpGameSticky(channel){
+  try {
+    const row=db.prepare('SELECT setting_value FROM bot_settings WHERE setting_key=?').get(GAME_STICKY_KEY);
+    if(row?.setting_value){const old=await channel.messages.fetch(row.setting_value).catch(()=>null);if(old)await old.delete().catch(()=>{});}
+    const msg=await channel.send({embeds:[gameStickyEmbed()]});
+    db.prepare('INSERT INTO bot_settings(setting_key,setting_value) VALUES(?,?) ON CONFLICT(setting_key) DO UPDATE SET setting_value=excluded.setting_value').run(GAME_STICKY_KEY,msg.id);
+  } catch(e){console.error('Could not refresh game-price sticky message:',e.message);}
+}
+async function ensureGameSticky(){
+  try {const channel=await bot.channels.fetch(GAME_PRICE_CHANNEL_ID);if(!channel?.isTextBased())return;const row=db.prepare('SELECT setting_value FROM bot_settings WHERE setting_key=?').get(GAME_STICKY_KEY);const existing=row?.setting_value?await channel.messages.fetch(row.setting_value).catch(()=>null):null;if(!existing)await bumpGameSticky(channel);} catch(e){console.error('Could not initialize game-price channel sticky:',e.message);}
+}
+async function createGameInquiryTicket(interaction, appId){
+  const game=await steamSearchById(appId);
+  if(!game)return interaction.reply({content:'I could not find this game on Steam. Please type the game name again.',ephemeral:true});
+  const price=db.prepare('SELECT our_price FROM game_prices WHERE app_id=?').get(String(appId));
+  const fakeId=`GAME-${appId}-${Date.now().toString().slice(-6)}`;
+  const invoice={invoiceId:fakeId,buyerName:interaction.user.username,sellerName:'Shop',documentType:'GAME PRICE REQUEST',products:[{name:game.name,qty:1,price:price?.our_price||0,accountEmail:'',accountPassword:''}],payable:price?.our_price||0,totalPaid:0,needToPay:price?.our_price||0,savedAt:new Date().toISOString()};
+  saveInvoice(invoice);
+  return startTicket(interaction,fakeId,0,'GAME PRICE REQUEST');
+}
+async function steamSearchById(appId){
+  try {const r=await fetch(`https://store.steampowered.com/api/appdetails?appids=${encodeURIComponent(appId)}&cc=in&l=english`,{headers:{'User-Agent':'Steam-Price-Lookup-Bot/1.0'}});if(!r.ok)return null;const d=await r.json();const item=d[String(appId)];if(!item?.success)return null;const x=item.data;return {appId:String(appId),name:x.name||`Steam App ${appId}`,steamPrice:x.is_free?'Free to Play':(x.price_overview?.final_formatted||'Not available'),description:x.short_description||'',header:x.header_image||null,storeUrl:`https://store.steampowered.com/app/${appId}/`,steamDbUrl:`https://steamdb.info/app/${appId}/`};}catch(e){console.error('Steam app lookup failed:',e.message);return null;}
+}
+
 async function startBot(){
  if(!process.env.DISCORD_TOKEN){console.log('DISCORD_TOKEN not set; website will run without Discord bot.');return;}
- bot=new Client({intents:[GatewayIntentBits.Guilds]});
+ bot=new Client({intents:[GatewayIntentBits.Guilds,GatewayIntentBits.GuildMessages,GatewayIntentBits.MessageContent]});
  const commands=[
   new SlashCommandBuilder().setName('resize').setDescription('Resize an image to 3840×2160 and return PNG').addAttachmentOption(o=>o.setName('image').setDescription('Image to resize').setRequired(true)).addStringOption(o=>o.setName('fit').setDescription('How to fit the image').addChoices({name:'Contain (no crop)',value:'contain'},{name:'Cover (crop edges)',value:'cover'})),
   new SlashCommandBuilder().setName('invoice-panel').setDescription('Open the invoice support panel'),
-  new SlashCommandBuilder().setName('invoice-inspect').setDescription('Admin: inspect a saved invoice').addStringOption(o=>o.setName('invoice_id').setDescription('Invoice ID to inspect').setRequired(true))
+  new SlashCommandBuilder().setName('invoice-inspect').setDescription('Admin: inspect a saved invoice').addStringOption(o=>o.setName('invoice_id').setDescription('Invoice ID to inspect').setRequired(true)),
+  new SlashCommandBuilder().setName('game-price').setDescription('Admin: set or update the listed price for a Steam game').addStringOption(o=>o.setName('game_name').setDescription('Exact game name').setRequired(true)).addNumberOption(o=>o.setName('our_price').setDescription('Your price in INR (0 removes the listed price)').setRequired(true).setMinValue(0).setMaxValue(1000000))
  ].map(c=>c.toJSON());
- bot.once('ready',async()=>{console.log(`Discord bot logged in as ${bot.user.tag}`);try{const rest=new REST({version:'10'}).setToken(process.env.DISCORD_TOKEN);if(process.env.GUILD_ID&&process.env.CLIENT_ID){await rest.put(Routes.applicationGuildCommands(process.env.CLIENT_ID,process.env.GUILD_ID),{body:commands});console.log('Guild slash commands registered.');}else if(process.env.CLIENT_ID){await rest.put(Routes.applicationCommands(process.env.CLIENT_ID),{body:commands});console.log('Global slash commands registered.');}else console.warn('CLIENT_ID missing; slash commands were not registered.');}catch(e){console.error('Command registration failed:',e);}});
+ bot.once('ready',async()=>{console.log(`Discord bot logged in as ${bot.user.tag}`);await ensureGameSticky();try{const rest=new REST({version:'10'}).setToken(process.env.DISCORD_TOKEN);if(process.env.GUILD_ID&&process.env.CLIENT_ID){await rest.put(Routes.applicationGuildCommands(process.env.CLIENT_ID,process.env.GUILD_ID),{body:commands});console.log('Guild slash commands registered.');}else if(process.env.CLIENT_ID){await rest.put(Routes.applicationCommands(process.env.CLIENT_ID),{body:commands});console.log('Global slash commands registered.');}else console.warn('CLIENT_ID missing; slash commands were not registered.');}catch(e){console.error('Command registration failed:',e);}});
  bot.on('interactionCreate',async interaction=>{
   try{
    if(interaction.isChatInputCommand()){
     if(interaction.commandName==='resize'){
      await interaction.deferReply();try{const file=interaction.options.getAttachment('image');if(!file.contentType?.startsWith('image/'))return interaction.editReply('Please attach a valid image.');if(file.size>15*1024*1024)return interaction.editReply('Image must be 15 MB or smaller.');const response=await fetch(file.url);if(!response.ok)throw new Error('Could not download image');const input=Buffer.from(await response.arrayBuffer());const fit=interaction.options.getString('fit')||'contain';const png=await sharp(input,{failOn:'none'}).rotate().resize(3840,2160,{fit:fit==='cover'?'cover':'contain',background:{r:15,g:18,b:32,alpha:1}}).png({compressionLevel:8}).toBuffer();await interaction.editReply({content:`Done — **3840 × 2160 px** PNG. Fit: **${fit}**.`,files:[new AttachmentBuilder(png,{name:'resized-3840x2160.png'})]});}catch(e){console.error('Resize failed',e);await interaction.editReply('Could not resize this image. Use JPG, PNG or WebP under 15 MB.');}
     }
+    if(interaction.commandName==='game-price'){
+     if(!isStaff(interaction))return interaction.reply({content:'Only server staff or the server owner can edit game prices.',ephemeral:true});
+     await interaction.deferReply({ephemeral:true});
+     const name=interaction.options.getString('game_name',true).trim();const price=interaction.options.getNumber('our_price',true);
+     try {const game=await steamSearch(name);if(!game)return interaction.editReply(`No Steam game found for **${name}**. Check the title and try again.`);
+       if(price===0){db.prepare('DELETE FROM game_prices WHERE app_id=?').run(game.appId);return interaction.editReply(`Removed the listed price for **${game.name}**. Members will now see **Our Price: Not listed** and an **Open Ticket** button.`);}
+       db.prepare('INSERT INTO game_prices(app_id,game_name,our_price,updated_by,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(app_id) DO UPDATE SET game_name=excluded.game_name,our_price=excluded.our_price,updated_by=excluded.updated_by,updated_at=excluded.updated_at').run(game.appId,game.name,price,interaction.user.id,new Date().toISOString());
+       return interaction.editReply(`Updated price for **${game.name}**.\nSteam Price (India): **${game.steamPrice}**\nOur Price: **${rupees(price)}**\nGame ID: ${game.appId}`);
+     }catch(e){console.error('Game price update failed:',e);return interaction.editReply('Could not fetch Steam details right now. Try again in a minute.');}
+    }
     if(interaction.commandName==='invoice-panel'){
      const row=new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('invoicepanel:open').setLabel('Search Invoice / Open Ticket').setStyle(ButtonStyle.Primary));
-     return interaction.reply(v2Card('Imposter Network • Support Panel','Press the button below, enter your invoice ID, then select the product and issue type to create a private support ticket.',[row]));
+     return interaction.reply(v2Card('Support Panel','Press the button below, enter your invoice ID, then select the product and issue type to create a private support ticket.',[row]));
     }
     if(interaction.commandName==='invoice-inspect'){
      if(!isStaff(interaction))return interaction.reply({content:'Only server administrators, staff with Manage Channels, configured staff role, or the server owner can inspect invoices.',ephemeral:true});
      const typed=interaction.options.getString('invoice_id',true).trim();const record=getInvoice(typed);
      if(!record)return interaction.reply({content:`No saved invoice found for **${typed}**. Make sure it was saved to lookup.`,ephemeral:true});
      const products=(record.products||[]).map((p,i)=>`**${i+1}. ${short(p.name,80)}** — Qty ${Number(p.qty)||0} × ₹${Number(p.price||0).toFixed(2)}${p.accountEmail?'\nEmail / ID: ||'+String(p.accountEmail).slice(0,120)+'||':''}${p.accountPassword?'\nPassword: ||'+String(p.accountPassword).slice(0,120)+'||':''}`).join('\n\n')||'No products';
-     const details=`**Invoice:** ${short(record.invoiceId)}\n**Buyer:** ${short(record.buyerName)}\n**Shop:** ${short(record.sellerName||record.shopName||'Imposter Network')}\n**Type:** ${short(record.documentType||'INVOICE')}\n**Created:** ${short(record.date||record.savedAt||'—')}\n**Products:** ${(record.products||[]).length}\n**Payable:** ₹${Number(record.payable||0).toFixed(2)}\n**Paid:** ₹${Number(record.totalPaid||0).toFixed(2)}\n**Balance:** ₹${Number(record.needToPay||0).toFixed(2)}\n\n${products}`;
+     const details=`**Invoice:** ${short(record.invoiceId)}\n**Buyer:** ${short(record.buyerName)}\n**Shop:** ${short(record.sellerName||record.shopName||'Not specified')}\n**Type:** ${short(record.documentType||'INVOICE')}\n**Created:** ${short(record.date||record.savedAt||'—')}\n**Products:** ${(record.products||[]).length}\n**Payable:** ₹${Number(record.payable||0).toFixed(2)}\n**Paid:** ₹${Number(record.totalPaid||0).toFixed(2)}\n**Balance:** ₹${Number(record.needToPay||0).toFixed(2)}\n\n${products}`;
      return interaction.reply(v2Card(`Admin Invoice Inspect • ${short(record.invoiceId,80)}`,details));
     }
+   }
+   if(interaction.isButton() && interaction.customId.startsWith('gameopen:')){
+    if(interaction.channelId!==GAME_PRICE_CHANNEL_ID)return interaction.reply({content:'Game price lookup buttons only work in the configured game-price channel.',ephemeral:true});
+    await interaction.deferReply({ephemeral:true});
+    try{return await createGameInquiryTicket(interaction,interaction.customId.split(':')[1]);}catch(e){console.error('Game inquiry ticket failed:',e);return interaction.editReply('Could not create the game inquiry ticket. Please contact staff.');}
    }
    if(interaction.isButton() && interaction.customId==='invoicepanel:open'){
     const modal=new ModalBuilder().setCustomId('invoicepanel:submit').setTitle('Find Your Invoice');
@@ -155,7 +243,7 @@ async function startBot(){
    if(interaction.isModalSubmit() && interaction.customId==='invoicepanel:submit'){
     const typed=interaction.fields.getTextInputValue('invoice_id').trim();const record=getInvoice(typed);
     if(!record)return interaction.reply({content:`No saved invoice found for **${typed}**. Check the ID and make sure the invoice was saved to lookup.`,ephemeral:true});
-    return interaction.reply(v2Card(`Invoice ${record.invoiceId}`,`**Buyer:** ${short(record.buyerName)}\n**Shop:** ${short(record.sellerName||record.shopName||'Imposter Network')}\n**Type:** ${short(record.documentType||'INVOICE')}\n**Products:** ${(record.products||[]).length}\n**Payable:** ₹${Number(record.payable||0).toFixed(2)}\n**Paid:** ₹${Number(record.totalPaid||0).toFixed(2)}\n**Balance:** ₹${Number(record.needToPay||0).toFixed(2)}\n\nSelect the buyer, then product, then ticket reason.`,[selectInvoiceBuyer(record)]));
+    return interaction.reply(v2Card(`Invoice ${record.invoiceId}`,`**Buyer:** ${short(record.buyerName)}\n**Shop:** ${short(record.sellerName||record.shopName||'Not specified')}\n**Type:** ${short(record.documentType||'INVOICE')}\n**Products:** ${(record.products||[]).length}\n**Payable:** ₹${Number(record.payable||0).toFixed(2)}\n**Paid:** ₹${Number(record.totalPaid||0).toFixed(2)}\n**Balance:** ₹${Number(record.needToPay||0).toFixed(2)}\n\nSelect the buyer, then product, then ticket reason.`,[selectInvoiceBuyer(record)]));
    }
    if(interaction.isStringSelectMenu()){
     const [kind,...parts]=interaction.customId.split(':');
@@ -217,6 +305,24 @@ async function startBot(){
     return interaction.reply({content:action==='ticketadd'?'Selected users added to ticket.':'Selected users removed from ticket where allowed.',ephemeral:true});
    }
   }catch(e){console.error('Interaction failed:',e);const msg='Something went wrong processing this action. Check the server logs.';if(interaction.deferred||interaction.replied)await interaction.followUp({content:msg,ephemeral:true}).catch(()=>{});else await interaction.reply({content:msg,ephemeral:true}).catch(()=>{});}
+ });
+ bot.on('messageCreate',async message=>{
+  if(!message.guild||message.author.bot||message.channelId!==GAME_PRICE_CHANNEL_ID)return;
+  const query=String(message.content||'').trim();
+  try {
+    // Only ordinary short text messages are treated as game-name searches. Bot commands and chat filler are ignored.
+    const cleaned=query.replace(/<@!?\d+>/g,'').replace(/https?:\/\/\S+/gi,'').trim();
+    const normalized=cleaned.toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+    const shouldSearch=cleaned.length>=2&&cleaned.length<=90&&!cleaned.startsWith('/')&&!GAME_IGNORE.has(normalized)&&!/^\d+$/.test(normalized);
+    if(shouldSearch){
+      const game=await steamSearch(cleaned);
+      if(game){
+        const price=db.prepare('SELECT our_price,game_name FROM game_prices WHERE app_id=?').get(game.appId);
+        await message.channel.send({embeds:[gameResultEmbed(game,price)],components:[gameResultComponents(game,price)],allowedMentions:{parse:[]}});
+      }
+    }
+  } catch(e){console.error('Game name lookup failed:',e.message);}
+  finally { await bumpGameSticky(message.channel); }
  });
  bot.on('error',e=>console.error('Discord client error:',e));await bot.login(process.env.DISCORD_TOKEN);
 }

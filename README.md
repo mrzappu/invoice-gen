@@ -1,18 +1,21 @@
-# INET Invoice Studio + Discord Support Bot
+# Invoice Studio + Discord Support Bot
 
 Node.js/Express website and Discord bot. Invoice records and private product credentials are stored in SQLite (`invoice.db`). The public invoice API never returns account email/ID or password fields, and the invoice preview/PNG/PDF never renders them.
 
 ## Features
-- Imposter Network and Gojo's Steam Lounge invoice templates, nine themes, live preview, PNG/PDF/print exports.
+- Generic invoice templates, color themes, live preview, PNG/PDF/print exports.
 - Save/search invoices using the same invoice ID.
 - SQLite database with automatic schema creation and a compatibility import for legacy `invoices.json` records.
 - `/invoice-search`: invoice lookup, buyer selection, product selection, Replace/Help/Bug/Refund reason, then private ticket creation.
 - Ticket controls in a Discord Components V2 container: Claim, Close, Reopen, Account Details, Add user, Remove user.
 - Private credentials are revealed ephemerally only to the ticket claimant or server owner.
 - `/resize`: resize an attached image to 3840×2160 PNG using Contain or Cover.
+- Game-price lookup in Discord channel `1529155314887163986`: members type a game name to see Steam India pricing, game details, and SteamDB/Steam links.
+- `/game-price game_name:<title> our_price:<INR>` lets staff set/update the shop price. Re-run it to edit; use `0` to remove the listed price. If no shop price is set, the response shows “Our Price: Not listed” and an **Open Ticket** button.
+- A sticky instruction embed is automatically maintained in the configured game-price channel. Set `GAME_PRICE_CHANNEL_ID` to override the default channel ID.
 
 ## Local setup
-1. Install Node.js 20 or newer.
+1. Install Node.js 22.22.0.
 2. Run `npm install`.
 3. Set environment variables (see below).
 4. Run `npm start` and open `http://localhost:10000`.
@@ -22,6 +25,7 @@ Node.js/Express website and Discord bot. Invoice records and private product cre
 - `CLIENT_ID` — Discord application ID.
 - `GUILD_ID` — optional test server ID; guild commands update quickly when supplied.
 - `STAFF_ROLE_ID` — optional staff role given access to new ticket channels.
+- `GAME_PRICE_CHANNEL_ID` — optional channel for game-name lookup; defaults to `1529155314887163986`.
 - `DB_FILE` — optional explicit SQLite database path. Default: `./invoice.db`.
 - `DATA_DIR` — optional data directory. If set, default database path becomes `$DATA_DIR/invoice.db`.
 - `INVOICE_API_KEY` — optional API key. If configured, website fetch requests must also send `x-api-key`; configure the frontend accordingly before enabling this.
@@ -41,6 +45,14 @@ Node.js/Express website and Discord bot. Invoice records and private product cre
 
 ## Account details safety
 Enter optional account email/ID and password in the product row. They are stored in the SQLite invoice payload but excluded from public invoice API responses and visual exports. Ticket account details are ephemeral and available only to the claimed staff member or server owner. Use trusted staff only, rotate credentials after use, and protect backups of `invoice.db` because it contains sensitive data.
+
+## Game-price channel setup
+1. Enable **Message Content Intent** for the bot in the Discord Developer Portal (Bot settings).
+2. Ensure the bot can View Channel, Read Message History, Send Messages, Embed Links, and Manage Messages in the game-price channel. Manage Messages is needed to move the sticky note to the bottom after member messages.
+3. Deploy the code, then in the target channel type a game title. Members can only trigger lookups in the configured channel.
+4. Staff use `/game-price game_name:<Steam game title> our_price:<INR>` to set or edit your shop price. Use `0` to clear it.
+
+Game details/prices are retrieved from Steam’s store endpoints, and each result includes a SteamDB details link. SteamDB says it has no public API and does not allow automated scraping, so the bot does not scrape SteamDB directly. Steam store pricing can change with sales and region settings.
 
 ## Discord permissions
 Invite the bot with `bot` and `applications.commands` scopes. It needs View Channels, Send Messages, Read Message History, Manage Channels, and Manage Roles/permission-overwrite access in the support category. Configure `STAFF_ROLE_ID` if you want a staff role automatically added to new tickets. The bot must be in the target server and `CLIENT_ID` must match its application.
