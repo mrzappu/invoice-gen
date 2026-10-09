@@ -7,13 +7,15 @@ services:
     startCommand: npm start
     healthCheckPath: /health
     envVars:
-      - key: NODE_VERSION
-        value: 20
+      - key: NODE_ENV
+        value: production
+      - key: DATA_DIR
+        value: /var/data
       - key: DISCORD_TOKEN
         sync: false
       - key: CLIENT_ID
         sync: false
       - key: GUILD_ID
         sync: false
-      - key: INVOICE_API_KEY
-        generateValue: true
+      - key: STAFF_ROLE_ID
+        sync: false

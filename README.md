@@ -1,52 +1,46 @@
-# INET Invoice Studio + Discord Bot
+# INET Invoice Studio + Discord Support Bot
 
-A vanilla HTML/CSS/JS invoice studio served by a small Node.js/Express service. The same Node process connects a Discord bot and provides:
+Node.js/Express website and Discord bot. Invoice records and private product credentials are stored in SQLite (`invoice.db`). The public invoice API never returns account email/ID or password fields, and the invoice preview/PNG/PDF never renders them.
 
-- Live invoice preview, Imposter Network and Gojo's Steam Lounge presets, 9 themes.
-- Product rows, charges, discounts, payments, Indian-numbering amount in words, terms, watermark, received seal, signature.
-- PNG and PDF exports, browser print.
-- Save invoice to `/api/invoices` and search it using Discord `/invoice-search`.
-- Discord `/resize` command that resizes an attached image to exactly 3840×2160 and returns a PNG. `contain` keeps the full image with padding; `cover` fills the canvas by cropping edges.
-- `/health` endpoint and Render-compatible `process.env.PORT` binding.
+## Features
+- Imposter Network and Gojo's Steam Lounge invoice templates, nine themes, live preview, PNG/PDF/print exports.
+- Save/search invoices using the same invoice ID.
+- SQLite database with automatic schema creation and a compatibility import for legacy `invoices.json` records.
+- `/invoice-search`: invoice lookup, buyer selection, product selection, Replace/Help/Bug/Refund reason, then private ticket creation.
+- Ticket controls in a Discord Components V2 container: Claim, Close, Reopen, Account Details, Add user, Remove user.
+- Private credentials are revealed ephemerally only to the ticket claimant or server owner.
+- `/resize`: resize an attached image to 3840×2160 PNG using Contain or Cover.
 
-## Run locally
+## Local setup
+1. Install Node.js 20 or newer.
+2. Run `npm install`.
+3. Set environment variables (see below).
+4. Run `npm start` and open `http://localhost:10000`.
 
-Requires Node.js 20+.
+## Environment variables
+- `DISCORD_TOKEN` — bot token.
+- `CLIENT_ID` — Discord application ID.
+- `GUILD_ID` — optional test server ID; guild commands update quickly when supplied.
+- `STAFF_ROLE_ID` — optional staff role given access to new ticket channels.
+- `DB_FILE` — optional explicit SQLite database path. Default: `./invoice.db`.
+- `DATA_DIR` — optional data directory. If set, default database path becomes `$DATA_DIR/invoice.db`.
+- `INVOICE_API_KEY` — optional API key. If configured, website fetch requests must also send `x-api-key`; configure the frontend accordingly before enabling this.
 
-```sh
-npm install
-# set DISCORD_TOKEN, CLIENT_ID and optionally GUILD_ID in your environment
-npm start
-```
+## Render deployment
+- Build: `npm install`
+- Start: `npm start`
+- Health check: `/health`
+- Add `DISCORD_TOKEN`, `CLIENT_ID`, `GUILD_ID`, and optionally `STAFF_ROLE_ID` in Render Environment.
+- To preserve SQLite data, use storage that persists across deploys/restarts and set `DB_FILE` to that mounted path. Render Free Web Services have ephemeral filesystems and may sleep; do not treat the bundled `invoice.db` or the free service filesystem as permanent storage.
 
-Open `http://localhost:10000`. If no `DISCORD_TOKEN` is set, the website still runs without the bot.
+## Fix for `No data found`
+1. On the website, click **Save to lookup** after creating the invoice. The status must confirm the invoice ID was saved.
+2. Search the exact same invoice ID using `/invoice-search`.
+3. On startup, this version imports any legacy `invoices.json` found beside the app, in `data/`, or in `DATA_DIR` into SQLite when that ID is not already present.
+4. Check Render logs for database startup errors. Keep the same `DB_FILE` path across website and bot (they run in the same Node process).
 
-## Deploy on Render Free
+## Account details safety
+Enter optional account email/ID and password in the product row. They are stored in the SQLite invoice payload but excluded from public invoice API responses and visual exports. Ticket account details are ephemeral and available only to the claimed staff member or server owner. Use trusted staff only, rotate credentials after use, and protect backups of `invoice.db` because it contains sensitive data.
 
-1. Upload this folder to a GitHub repository.
-2. In Render, create a **Web Service** from that repository. Use Build Command `npm install` and Start Command `npm start` (or use `render.yaml`).
-3. Add environment variables:
-   - `DISCORD_TOKEN`: bot token from the Discord Developer Portal. Keep it secret.
-   - `CLIENT_ID`: Discord application ID.
-   - `GUILD_ID`: your server ID (recommended for fast guild command registration).
-   - `INVOICE_API_KEY`: optional API key. If set, the browser must send it to use save/search endpoints; this simple front end does not prompt for it, so leave it unset for the included browser workflow or add an authenticated admin UI before enabling it.
-4. Invite the bot to your server with `bot` and `applications.commands` scopes. It needs no privileged gateway intents for these slash commands.
-5. After deploy, visit `https://YOUR-SERVICE.onrender.com/health` and then the root website.
-
-## Important Render Free limitations
-
-- Free web services can sleep when idle, so the bot may be offline while the service sleeps. A web service is not a reliable always-on Discord bot host. For 24/7 bot availability, use an always-on worker/paid service or host the bot separately.
-- The included invoice store is a JSON file under `data/`. Render Free's filesystem is ephemeral: data may be lost on redeploy/restart. For real invoice history, attach a persistent disk where supported or use a hosted database (Postgres, etc.). Do not treat the JSON file as durable accounting storage.
-- Never publish your bot token in code or commit it to GitHub. Rotate it immediately if exposed.
-
-## Invoice lookup
-
-Saving a document through **Save to lookup** stores its invoice ID and fields. In Discord use `/invoice-search invoice_id:IMP-...`. The lookup only works for records still present in the JSON file.
-
-## Image resizing
-
-Use `/resize image:<attachment> fit:Contain (no crop)` for a complete image with background padding, or `Cover (crop edges)` to fill the 16:9 canvas. The output is exactly 3840×2160 PNG. Discord upload size limits may vary; very detailed 4K PNGs can exceed the server's upload limit.
-
-## Security note
-
-This is a starter project. Before making it public for customers, add authentication/authorization, request rate limits, stronger validation, persistent database storage, backups, and an access policy for invoice searches. The invoice search command currently returns the invoice details ephemerally to the person requesting it.
+## Discord permissions
+Invite the bot with `bot` and `applications.commands` scopes. It needs View Channels, Send Messages, Read Message History, Manage Channels, and Manage Roles/permission-overwrite access in the support category. Configure `STAFF_ROLE_ID` if you want a staff role automatically added to new tickets. The bot must be in the target server and `CLIENT_ID` must match its application.
