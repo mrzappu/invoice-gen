@@ -44,3 +44,10 @@ Enter optional account email/ID and password in the product row. They are stored
 
 ## Discord permissions
 Invite the bot with `bot` and `applications.commands` scopes. It needs View Channels, Send Messages, Read Message History, Manage Channels, and Manage Roles/permission-overwrite access in the support category. Configure `STAFF_ROLE_ID` if you want a staff role automatically added to new tickets. The bot must be in the target server and `CLIENT_ID` must match its application.
+
+## Render build fix (Node.js / better-sqlite3)
+
+This project is pinned to Node.js 22.x in `package.json` and `render.yaml`. The reported build log used Node.js 26, for which a compatible `better-sqlite3` prebuilt binary may not be available, causing a native compilation attempt. Commit both updated files and trigger a **Clear build cache & deploy** in Render. Keep the existing dependencies and `npm start` start command.
+
+If the build still fails, inspect the final compiler lines in the Render log; the Node version pin addresses the Node 26 mismatch but cannot guarantee a successful native build in every environment. Do not commit production credentials or a database containing customer/account passwords to a public repository. Render's free filesystem is ephemeral, so configure persistent storage or a managed database for production records.
+
