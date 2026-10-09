@@ -73,3 +73,12 @@ Do not commit production credentials or a database containing customer/account p
 - Staff can claim unclaimed tickets. The assigned claimant can unclaim their own ticket. The server owner can unclaim or take over a ticket claimed by another staff member.
 - The ticket opener, assigned claimant, or server owner can close a ticket. Only the assigned claimant or server owner can reopen it.
 - Set `STAFF_ROLE_ID` in Render to your staff role ID. The bot needs permission to create/manage channels and manage channel overwrites. Re-deploy after updating the source so Discord refreshes the slash commands.
+
+
+## Replacement invoices and ticket closure
+- Staff can use `/invoice-replacement invoice_id:<original ID>` to create a new replacement invoice ID and a replacement PDF. The new record stores `replacementOf`, and the `invoice_replacements` table records the original ID, new ID, template name, staff member, and time. A direct command can DM only when the original invoice payload includes a usable `discordUserId` or `buyerDiscordId`.
+- From an open ticket, use **Create Replacement Invoice**. This uses the ticket opener as the DM recipient, sends the replacement PDF where DMs are allowed, and posts the new invoice ID and original invoice ID in the ticket. Members can use the new invoice ID in `/invoice-panel` to open a separate ticket if the replacement has an issue.
+- The PDF carries forward the invoice's seller name, template/theme label, color field (when saved as `themeColor` or `primaryColor`), products, and totals. The PDF generator is a clean invoice PDF; it does not reproduce arbitrary custom HTML/CSS templates or logos unless those are represented in saved invoice fields.
+- The ticket **Close** button now permits the opener, assigned claimant, configured staff/admin, or server owner. It builds a text transcript before deletion, attempts to DM it to the opener, closer, and claimant, optionally posts a copy to `TICKET_LOG_CHANNEL_ID`, then deletes the ticket channel after a short delay. The bot needs Manage Channels, Read Message History, and permission to DM recipients (recipients can have DMs disabled).
+- Set optional `TICKET_LOG_CHANNEL_ID` to a staff-only text channel if you want an archived transcript even when DMs fail.
+- `/invoice-panel` posts a public panel; invoice lookup results and ticket creation confirmations remain private where appropriate.

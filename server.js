@@ -5,6 +5,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const multer = require('multer');
 const sharp = require('sharp');
+const PDFDocument = require('pdfkit');
 const Database = require('better-sqlite3');
 const {
   Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder,
@@ -38,6 +39,7 @@ CREATE INDEX IF NOT EXISTS idx_tickets_invoice ON tickets(invoice_id);
 CREATE INDEX IF NOT EXISTS idx_tickets_channel ON tickets(channel_id);
 CREATE TABLE IF NOT EXISTS game_prices (app_id TEXT PRIMARY KEY, game_name TEXT NOT NULL, our_price REAL NOT NULL, updated_by TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS bot_settings (setting_key TEXT PRIMARY KEY, setting_value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS invoice_replacements (new_invoice_id TEXT PRIMARY KEY COLLATE NOCASE, original_invoice_id TEXT NOT NULL COLLATE NOCASE, ticket_id INTEGER, created_by TEXT NOT NULL, template_name TEXT NOT NULL, created_at TEXT NOT NULL);
 `);
 try { db.exec('ALTER TABLE tickets ADD COLUMN product_index INTEGER NOT NULL DEFAULT 0'); } catch (e) { if (!String(e.message).includes('duplicate column name')) throw e; }
 app.use(express.json({ limit: '2mb' }));
@@ -97,15 +99,62 @@ function ticketControls(ticketId,status='open',claimedBy=null) {
   row.addComponents(new ButtonBuilder().setCustomId(`ticketclose:${ticketId}`).setLabel('Close').setStyle(ButtonStyle.Danger).setDisabled(status==='closed'));
   row.addComponents(new ButtonBuilder().setCustomId(`ticketreopen:${ticketId}`).setLabel('Reopen').setStyle(ButtonStyle.Success).setDisabled(status!=='closed'));
   row.addComponents(new ButtonBuilder().setCustomId(`ticketdetails:${ticketId}`).setLabel('Account Details').setStyle(ButtonStyle.Secondary));
+  const replacement=new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`ticketreplace:${ticketId}`).setLabel('Create Replacement Invoice').setStyle(ButtonStyle.Primary).setDisabled(status==='closed'));
   const users=new ActionRowBuilder().addComponents(new UserSelectMenuBuilder().setCustomId(`ticketadd:${ticketId}`).setPlaceholder('Add user to ticket').setMinValues(1).setMaxValues(5));
   const remove=new ActionRowBuilder().addComponents(new UserSelectMenuBuilder().setCustomId(`ticketremove:${ticketId}`).setPlaceholder('Remove user from ticket').setMinValues(1).setMaxValues(5));
-  return [row,users,remove];
+  return [row,replacement,users,remove];
 }
 function ticketById(id){return db.prepare('SELECT * FROM tickets WHERE id=?').get(Number(id));}
 function isOwner(interaction){return Boolean(interaction.guild && interaction.guild.ownerId===interaction.user.id);}
 function isStaff(interaction){const roleId=process.env.STAFF_ROLE_ID;return isOwner(interaction)||Boolean(interaction.memberPermissions?.has(PermissionFlagsBits.ManageChannels)||interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)||(roleId&&interaction.member?.roles?.cache?.has(roleId)));}
 function canSeeSecrets(interaction,ticket){return isOwner(interaction)||ticket.claimed_by===interaction.user.id;}
 async function respondInteraction(interaction,payload){ if(interaction.deferred) return interaction.editReply(payload); if(interaction.replied) return interaction.followUp(payload); return interaction.reply(payload); }
+function makeInvoiceId(prefix='REPL') {
+  return `${prefix}-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+}
+function createInvoicePdfBuffer(invoice, metadata={}) {
+  return new Promise((resolve,reject)=>{
+    try {
+      const doc=new PDFDocument({size:'A4',margin:48,info:{Title:`Invoice ${invoice.invoiceId}`,Author:invoice.sellerName||invoice.shopName||'Shop'}});
+      const chunks=[];doc.on('data',c=>chunks.push(c));doc.on('end',()=>resolve(Buffer.concat(chunks)));doc.on('error',reject);
+      const accent=String(invoice.themeColor||invoice.primaryColor||'#2563eb');
+      doc.fontSize(22).fillColor(accent).text(String(invoice.sellerName||invoice.shopName||'INVOICE').slice(0,90));
+      doc.moveDown(.3).fontSize(18).fillColor('#111827').text(metadata.isReplacement?'REPLACEMENT INVOICE':'INVOICE');
+      doc.moveDown(.4).fontSize(10).fillColor('#333333');
+      doc.text(`Invoice ID: ${invoice.invoiceId}`);doc.text(`Buyer: ${invoice.buyerName||'—'}`);doc.text(`Date: ${new Date().toLocaleString('en-IN')}`);
+      if(metadata.originalInvoiceId)doc.text(`Replaces invoice: ${metadata.originalInvoiceId}`);
+      if(metadata.templateName)doc.text(`Template: ${metadata.templateName}`);
+      doc.moveDown().fontSize(12).fillColor(accent).text('PRODUCTS');doc.moveDown(.3).fillColor('#111827').fontSize(10);
+      for(const p of (invoice.products||[])){
+        doc.text(`${String(p.name||'Product').slice(0,100)}  |  Qty: ${Number(p.qty)||0}  |  Unit price: INR ${Number(p.price||0).toFixed(2)}  |  Total: INR ${((Number(p.qty)||0)*(Number(p.price)||0)).toFixed(2)}`);
+      }
+      doc.moveDown().fontSize(10);doc.text(`Payable: INR ${Number(invoice.payable||0).toFixed(2)}`);doc.text(`Paid: INR ${Number(invoice.totalPaid||0).toFixed(2)}`);doc.text(`Balance: INR ${Number(invoice.needToPay||0).toFixed(2)}`);
+      if(metadata.isReplacement){doc.moveDown().fillColor('#b45309').text('This document was issued as a replacement for the original invoice shown above.');}
+      doc.end();
+    } catch(e){reject(e);}
+  });
+}
+async function getTranscript(channel, ticket) {
+  const lines=[`Ticket Transcript #${ticket.id}`,`Invoice ID: ${ticket.invoice_id}`,`Product: ${ticket.product_name}`,`Issue: ${ticket.issue_type}`,`Opened by: ${ticket.opener_id}`,`Created: ${ticket.created_at}`,`Closed: ${new Date().toISOString()}`,'','Messages:'];
+  let before, fetchedCount=0;
+  try {
+    while(fetchedCount<500){
+      const batch=await channel.messages.fetch({limit:100,...(before?{before}:{})});if(!batch.size)break;
+      const ordered=[...batch.values()].sort((a,b)=>a.createdTimestamp-b.createdTimestamp);
+      for(const m of ordered){lines.push(`[${new Date(m.createdTimestamp).toISOString()}] ${m.author?.tag||m.author?.username||'Unknown'} (${m.author?.id||'?' }): ${m.content||'[no text]'}`);for(const a of m.attachments.values())lines.push(`  Attachment: ${a.url}`);}
+      fetchedCount+=batch.size;before=batch.last()?.id;if(batch.size<100)break;
+    }
+  } catch(e){lines.push(`Transcript fetch warning: ${e.message}`);}
+  return Buffer.from(lines.join('\n').slice(0,180000),'utf8');
+}
+async function sendTranscriptToUsers(guild, ticket, transcript, closerId) {
+  const recipients=new Set([ticket.opener_id,closerId].filter(Boolean));
+  if(ticket.claimed_by)recipients.add(ticket.claimed_by);
+  const attachment=new AttachmentBuilder(transcript,{name:`ticket-${ticket.id}-transcript.txt`});
+  for(const userId of recipients){try{const user=await bot.users.fetch(userId);await user.send({content:`Transcript for closed ticket #${ticket.id} (Invoice ${ticket.invoice_id}).`,files:[attachment]});}catch(e){console.warn(`Could not DM transcript to ${userId}: ${e.message}`);}}
+  const logId=process.env.TICKET_LOG_CHANNEL_ID;
+  if(logId){try{const log=await guild.channels.fetch(logId);if(log?.isTextBased())await log.send({content:`Ticket #${ticket.id} closed by <@${closerId}>. Invoice: ${ticket.invoice_id}.`,files:[new AttachmentBuilder(transcript,{name:`ticket-${ticket.id}-transcript.txt`})]});}catch(e){console.warn('Could not post ticket transcript to log channel:',e.message);}}
+}
 async function startTicket(interaction,invoiceId,productIndex,issueType) {
   const invoice=getInvoice(invoiceId); if(!invoice) return respondInteraction(interaction,{content:'Invoice record no longer exists. Save the invoice again and retry.',ephemeral:true});
   const product=(invoice.products||[])[Number(productIndex)]; if(!product) return respondInteraction(interaction,{content:'Product not found on this invoice.',ephemeral:true});
@@ -213,6 +262,7 @@ async function startBot(){
   new SlashCommandBuilder().setName('resize').setDescription('Resize an image to 3840×2160 and return PNG').addAttachmentOption(o=>o.setName('image').setDescription('Image to resize').setRequired(true)).addStringOption(o=>o.setName('fit').setDescription('How to fit the image').addChoices({name:'Contain (no crop)',value:'contain'},{name:'Cover (crop edges)',value:'cover'})),
   new SlashCommandBuilder().setName('invoice-panel').setDescription('Open the invoice support panel'),
   new SlashCommandBuilder().setName('invoice-inspect').setDescription('Admin: inspect a saved invoice').addStringOption(o=>o.setName('invoice_id').setDescription('Invoice ID to inspect').setRequired(true)),
+  new SlashCommandBuilder().setName('invoice-replacement').setDescription('Staff: create a replacement invoice and DM the PDF').addStringOption(o=>o.setName('invoice_id').setDescription('Original invoice ID').setRequired(true)),
   new SlashCommandBuilder().setName('game').setDescription('Privately check a Steam game price').addStringOption(o=>o.setName('game_name').setDescription('Game name to search on Steam').setRequired(true).setMaxLength(90)),
   new SlashCommandBuilder().setName('game-price').setDescription('Admin: set or update the listed price for a Steam game').addStringOption(o=>o.setName('game_name').setDescription('Exact game name').setRequired(true)).addNumberOption(o=>o.setName('our_price').setDescription('Your price in INR (0 removes the listed price)').setRequired(true).setMinValue(0).setMaxValue(1000000))
  ].map(c=>c.toJSON());
@@ -248,7 +298,21 @@ async function startBot(){
     }
     if(interaction.commandName==='invoice-panel'){
      const row=new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('invoicepanel:open').setLabel('Search Invoice / Open Ticket').setStyle(ButtonStyle.Primary));
-     return interaction.reply(v2Card('Support Panel','Press the button below, enter your invoice ID, then select the product and issue type to create a private support ticket.',[row]));
+     return interaction.reply({flags:MessageFlags.IsComponentsV2,components:[new ContainerBuilder().addTextDisplayComponents(new TextDisplayBuilder().setContent('## Invoice Support Panel\nPress the button below, enter your invoice ID, then select the product and issue type to create a private support ticket.')).addSeparatorComponents(new SeparatorBuilder()).addActionRowComponents(row)]});
+    }
+    if(interaction.commandName==='invoice-replacement'){
+     if(!isStaff(interaction))return interaction.reply({content:'Only staff or the server owner can create replacement invoices.',ephemeral:true});
+     await interaction.deferReply({flags:MessageFlags.Ephemeral});
+     const originalId=interaction.options.getString('invoice_id',true).trim();const original=getInvoice(originalId);
+     if(!original)return interaction.editReply(`No saved invoice found for ${originalId}.`);
+     const newId=makeInvoiceId();
+     const templateName=String(original.templateName||original.template||original.invoiceTemplate||original.themeName||'Default template');
+     const replacement={...original,invoiceId:newId,documentType:'REPLACEMENT INVOICE',replacementOf:original.invoiceId,templateName,createdAt:new Date().toISOString(),savedAt:new Date().toISOString()};
+     saveInvoice(replacement);
+     db.prepare('INSERT INTO invoice_replacements(new_invoice_id,original_invoice_id,ticket_id,created_by,template_name,created_at) VALUES(?,?,?,?,?,?)').run(newId,original.invoiceId,null,interaction.user.id,templateName,new Date().toISOString());
+     const pdf=await createInvoicePdfBuffer(replacement,{isReplacement:true,originalInvoiceId:original.invoiceId,templateName});
+     let dmSent=false;try{const buyer=await bot.users.fetch(String(original.discordUserId||original.buyerDiscordId||''));if(buyer?.id){await buyer.send({content:`Your replacement invoice has been created.\n**New Invoice ID:** ${newId}\n**Replaces Invoice:** ${original.invoiceId}\n**Template:** ${templateName}`,files:[new AttachmentBuilder(pdf,{name:`replacement-${newId}.pdf`})]});dmSent=true;}}catch(e){console.warn('Could not DM replacement invoice using invoice Discord user ID:',e.message);}
+     return interaction.editReply(`Replacement invoice created.\n**New Invoice ID:** ${newId}\n**Original Invoice:** ${original.invoiceId}\n**Template:** ${templateName}\n**PDF:** ${dmSent?'DM sent.':'Generated, but buyer DM was not sent because no usable Discord user ID is saved on this invoice. Use the ticket replacement button to DM the ticket opener.'}`);
     }
     if(interaction.commandName==='invoice-inspect'){
      if(!isStaff(interaction))return interaction.reply({content:'Only server administrators, staff with Manage Channels, configured staff role, or the server owner can inspect invoices.',ephemeral:true});
@@ -279,6 +343,20 @@ async function startBot(){
    if(interaction.isButton()){
     const [action,idText]=interaction.customId.split(':');const ticket=ticketById(idText);if(!ticket)return interaction.reply({content:'Ticket record not found.',ephemeral:true});
     const channel=interaction.guild?.channels.cache.get(ticket.channel_id);if(!channel)return interaction.reply({content:'Ticket channel not found.',ephemeral:true});
+    if(action==='ticketreplace'){
+      if(!isStaff(interaction)&&ticket.claimed_by!==interaction.user.id)return interaction.reply({content:'Only staff, the assigned claimant, or server owner can create a replacement invoice.',ephemeral:true});
+      if(ticket.status==='closed')return interaction.reply({content:'This ticket is closed. Reopen it before creating a replacement.',ephemeral:true});
+      await interaction.deferReply({flags:MessageFlags.Ephemeral});
+      const original=getInvoice(ticket.invoice_id);if(!original)return interaction.editReply('Original invoice was not found in the database.');
+      const newId=makeInvoiceId();const templateName=String(original.templateName||original.template||original.invoiceTemplate||original.themeName||'Default template');
+      const replacement={...original,invoiceId:newId,documentType:'REPLACEMENT INVOICE',replacementOf:original.invoiceId,templateName,createdAt:new Date().toISOString(),savedAt:new Date().toISOString()};
+      saveInvoice(replacement);
+      db.prepare('INSERT INTO invoice_replacements(new_invoice_id,original_invoice_id,ticket_id,created_by,template_name,created_at) VALUES(?,?,?,?,?,?)').run(newId,original.invoiceId,ticket.id,interaction.user.id,templateName,new Date().toISOString());
+      const pdf=await createInvoicePdfBuffer(replacement,{isReplacement:true,originalInvoiceId:original.invoiceId,templateName});
+      let dmSent=false;try{const buyer=await bot.users.fetch(ticket.opener_id);await buyer.send({content:`Your replacement is ready.\n**New Invoice ID:** ${newId}\n**Replaces Invoice:** ${original.invoiceId}\n**Template:** ${templateName}\nIf you have another issue, use this new invoice ID in the Invoice Support Panel.`,files:[new AttachmentBuilder(pdf,{name:`replacement-${newId}.pdf`})]});dmSent=true;}catch(e){console.warn('Replacement invoice DM failed:',e.message);}
+      await channel.send({content:`♻️ Replacement invoice created.\n**New Invoice ID:** \`${newId}\`\n**Original Invoice:** \`${original.invoiceId}\`\n**Template:** ${templateName}\n**PDF DM:** ${dmSent?'Sent to ticket opener.':'Could not DM member; check their privacy settings.'}`,allowedMentions:{parse:[]}});
+      return interaction.editReply(`Replacement invoice: ${newId}\nOriginal invoice: ${original.invoiceId}\nTemplate: ${templateName}\nPDF DM: ${dmSent?'Sent':'Failed — the member may have DMs disabled'}.`);
+    }
     if(action==='ticketdetails'){
       if(!canSeeSecrets(interaction,ticket))return interaction.reply({content:'For account safety, only the claimed ticket staff member and server owner can view account details.',ephemeral:true});
       const inv=getInvoice(ticket.invoice_id);const p=(inv?.products||[])[Number(ticket.product_index)]||{};
@@ -304,13 +382,18 @@ async function startBot(){
       return interaction.reply({content:'Ticket unclaimed and available to staff.',ephemeral:true});
     }
     if(action==='ticketclose'){
-      if(!isOwner(interaction)&&ticket.opener_id!==interaction.user.id&&ticket.claimed_by!==interaction.user.id)return interaction.reply({content:'Only the ticket opener, assigned claimant, or server owner can close this ticket.',ephemeral:true});
+      if(!isStaff(interaction)&&ticket.opener_id!==interaction.user.id&&ticket.claimed_by!==interaction.user.id)return interaction.reply({content:'Only the ticket opener, assigned claimant, staff, or server owner can close this ticket.',ephemeral:true});
       if(ticket.status==='closed')return interaction.reply({content:'This ticket is already closed.',ephemeral:true});
+      await interaction.deferReply({flags:MessageFlags.Ephemeral});
+      // Fetch and deliver transcript before removing the channel.
+      const transcript=await getTranscript(channel,ticket);
       db.prepare("UPDATE tickets SET status='closed',closed_at=? WHERE id=?").run(new Date().toISOString(),ticket.id);
-      await channel.permissionOverwrites.edit(ticket.opener_id,{SendMessages:false}).catch(()=>{});
-      await channel.send('🔒 Ticket closed. The assigned claimant or server owner can reopen it.');
-      await interaction.message.edit({components:[new ContainerBuilder().setAccentColor(0x747f8d).addTextDisplayComponents(new TextDisplayBuilder().setContent(`## Support Ticket #${ticket.id}\n**Invoice:** ${ticket.invoice_id}\n**Product:** ${short(ticket.product_name)}\n**Status:** CLOSED\n**Claimed by:** ${ticket.claimed_by?`<@${ticket.claimed_by}>`:'Unclaimed'}`)).addSeparatorComponents(new SeparatorBuilder()).addActionRowComponents(...ticketControls(ticket.id,'closed',ticket.claimed_by))]}).catch(()=>{});
-      return interaction.reply({content:'Ticket closed successfully.',ephemeral:true});
+      await sendTranscriptToUsers(interaction.guild,ticket,transcript,interaction.user.id);
+      if(process.env.TICKET_LOG_CHANNEL_ID){/* transcript is also posted to the configured log channel by sendTranscriptToUsers */}
+      await channel.send('🔒 Ticket closed. Transcript delivery was attempted by DM. This channel will be deleted shortly.').catch(()=>{});
+      await interaction.editReply('Ticket closed. Transcript was sent by DM where possible; the ticket channel will now be deleted.');
+      setTimeout(async()=>{try{await channel.delete(`Ticket #${ticket.id} closed by ${interaction.user.tag}; transcript sent/attempted`);db.prepare('UPDATE tickets SET channel_id=NULL WHERE id=?').run(ticket.id);}catch(e){console.error(`Could not delete closed ticket channel ${channel.id}:`,e.message);}},5000);
+      return;
     }
     if(action==='ticketreopen'){
       if(!isOwner(interaction)&&ticket.claimed_by!==interaction.user.id)return interaction.reply({content:'Only the assigned claimant or server owner can reopen this ticket.',ephemeral:true});
