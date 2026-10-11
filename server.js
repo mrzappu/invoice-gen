@@ -323,18 +323,23 @@ async function startBot(){
       // Game ID is accepted as a search input only and is intentionally not displayed on the card.
       const brand=template==='gojo'?"GOJO'S STEAM LOUNGE":template==='imposter'?'IMPOSTER NETWORK':'GAME PRICE LIST';
       const card=new ContainerBuilder();
-      card.addTextDisplayComponents(new TextDisplayBuilder().setContent(`## ${game.name}\n\n🟢 **OUR PRICE = ${rupees(ourPrice)}**  |  🔴 **STEAM PRICE = ${game.steamPrice}**`));
+      // Title on its own, followed by a compact Discord separator like the reference design.
+      card.addTextDisplayComponents(new TextDisplayBuilder().setContent(`## ${game.name}`));
+      card.addSeparatorComponents(new SeparatorBuilder());
+      // Our Price is bold; Steam price remains regular-weight text.
+      card.addTextDisplayComponents(new TextDisplayBuilder().setContent(`🟢 **OUR PRICE = ${rupees(ourPrice)}**  |  🔴 STEAM PRICE = ${game.steamPrice}`));
       card.addSeparatorComponents(new SeparatorBuilder());
       if(game.header){
         card.addMediaGalleryComponents(new MediaGalleryBuilder().addItems(new MediaGalleryItemBuilder().setURL(game.header).setDescription(game.name)));
         card.addSeparatorComponents(new SeparatorBuilder());
       }
       const buyRow=new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setLabel('» Buy Game').setStyle(ButtonStyle.Link).setURL('https://discord.com/channels/1519204760316809297/1526896976505864214')
+        new ButtonBuilder().setEmoji('⏩').setLabel('Buy Game').setStyle(ButtonStyle.Link).setURL('https://discord.com/channels/1519204760316809297/1526896976505864214')
       );
       card.addActionRowComponents(buyRow);
       card.addSeparatorComponents(new SeparatorBuilder());
-      card.addTextDisplayComponents(new TextDisplayBuilder().setContent(`© ${brand} • All rights reserved.`));
+      // Discord's -# subtext renders a smaller, muted footer line.
+      card.addTextDisplayComponents(new TextDisplayBuilder().setContent(`-# © ${brand} • All rights reserved.`));
       const target=interaction.channel;
       await target.send({flags:MessageFlags.IsComponentsV2,components:[card],allowedMentions:{parse:[]}});
       return interaction.editReply(`Published **${game.name}** in this channel.`);
