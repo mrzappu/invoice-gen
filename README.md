@@ -100,3 +100,9 @@ Back up your production database before deployment. The ZIP's `invoice.db` is a 
 ## Public game price cards (`/post`)
 
 Staff/server owners can publish a public game card with `/post`. Provide exactly one of `game_name` or `game_id`, enter `our_price`, and optionally select `template` (`gojo`, `imposter`, or `standard`). The bot posts a titled card with green Our Price, red Steam Price, Game ID, Steam header image, Buy Game link button, and branded footer. Publishing also saves/updates the Our Price in SQLite so `/game` uses the same value. The command posts in the channel where it is invoked; use it in the desired public channel.
+
+### `/post` game card style update
+- `/post` now publishes a clean Discord Components V2 card matching the `/game` result style, without a traditional coloured embed sidebar.
+- The card displays the game name, Our Price, Steam Price, game image, Buy Game button inside the card, and the selected template footer.
+- `game_id` remains available as a search input, but the Game ID is not displayed in the public card.
+- The Buy Game button opens the configured Discord destination channel: https://discord.com/channels/1519204760316809297/1526896976505864214

@@ -319,13 +319,25 @@ async function startBot(){
       const game=gameId?await steamSearchById(gameId.trim()):await steamSearch(gameName.trim());
       if(!game)return interaction.editReply('No Steam game found. Check the game name or Steam App ID and try again.');
       db.prepare('INSERT INTO game_prices(app_id,game_name,our_price,updated_by,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(app_id) DO UPDATE SET game_name=excluded.game_name,our_price=excluded.our_price,updated_by=excluded.updated_by,updated_at=excluded.updated_at').run(game.appId,game.name,ourPrice,interaction.user.id,new Date().toISOString());
-      const color=template==='gojo'?0x1677ff:template==='imposter'?0x8e44ad:0x36393f;
+      // Match /game's clean Components V2 style: no traditional coloured embed sidebar.
+      // Game ID is accepted as a search input only and is intentionally not displayed on the card.
       const brand=template==='gojo'?"GOJO'S STEAM LOUNGE":template==='imposter'?'IMPOSTER NETWORK':'GAME PRICE LIST';
-      const embed=new EmbedBuilder().setColor(color).setTitle(game.name).setDescription(`🟢 **OUR PRICE = ${rupees(ourPrice)}**  |  🔴 **STEAM PRICE = ${game.steamPrice}**\n\n🆔 **GAME ID:** ${game.appId}`).setImage(game.header||null).setFooter({text:`© ${brand} • All rights reserved.`});
-      const row=new ActionRowBuilder().addComponents(new ButtonBuilder().setLabel('» Buy Game').setStyle(ButtonStyle.Link).setURL(game.storeUrl));
+      const card=new ContainerBuilder();
+      card.addTextDisplayComponents(new TextDisplayBuilder().setContent(`## ${game.name}\n\n🟢 **OUR PRICE = ${rupees(ourPrice)}**  |  🔴 **STEAM PRICE = ${game.steamPrice}**`));
+      card.addSeparatorComponents(new SeparatorBuilder());
+      if(game.header){
+        card.addMediaGalleryComponents(new MediaGalleryBuilder().addItems(new MediaGalleryItemBuilder().setURL(game.header).setDescription(game.name)));
+        card.addSeparatorComponents(new SeparatorBuilder());
+      }
+      const buyRow=new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setLabel('» Buy Game').setStyle(ButtonStyle.Link).setURL('https://discord.com/channels/1519204760316809297/1526896976505864214')
+      );
+      card.addActionRowComponents(buyRow);
+      card.addSeparatorComponents(new SeparatorBuilder());
+      card.addTextDisplayComponents(new TextDisplayBuilder().setContent(`© ${brand} • All rights reserved.`));
       const target=interaction.channel;
-      await target.send({embeds:[embed],components:[row],allowedMentions:{parse:[]}});
-      return interaction.editReply(`Published **${game.name}** (Game ID: ${game.appId}) in this channel.`);
+      await target.send({flags:MessageFlags.IsComponentsV2,components:[card],allowedMentions:{parse:[]}});
+      return interaction.editReply(`Published **${game.name}** in this channel.`);
      }catch(e){console.error('/post game card failed:',e?.stack||e);return interaction.editReply('Could not publish the game card. Check the Render logs and try again.');}
     }
     if(interaction.commandName==='game-price'){
