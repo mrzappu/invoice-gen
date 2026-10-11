@@ -334,7 +334,7 @@ async function startBot(){
         card.addSeparatorComponents(new SeparatorBuilder());
       }
       const buyRow=new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setEmoji('⏩').setLabel('Buy Game').setStyle(ButtonStyle.Link).setURL('https://discord.com/channels/1519204760316809297/1526896976505864214')
+        new ButtonBuilder().setEmoji({ name: 'ArrowShow', id: '1558870569066168360', animated: true }).setLabel('Buy Game').setStyle(ButtonStyle.Link).setURL('https://discord.com/channels/1519204760316809297/1526896976505864214')
       );
       card.addActionRowComponents(buyRow);
       card.addSeparatorComponents(new SeparatorBuilder());
