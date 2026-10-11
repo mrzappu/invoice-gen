@@ -287,6 +287,7 @@ async function startBot(){
   new SlashCommandBuilder().setName('invoice-inspect').setDescription('Admin: inspect a saved invoice').addStringOption(o=>o.setName('invoice_id').setDescription('Invoice ID to inspect').setRequired(true)),
   new SlashCommandBuilder().setName('invoice-replacement').setDescription('Staff: create a replacement invoice and DM the PDF').addStringOption(o=>o.setName('invoice_id').setDescription('Invoice ID to replace').setRequired(true)).addStringOption(o=>o.setName('account_email').setDescription('Replacement account email / ID (optional)').setRequired(false)).addStringOption(o=>o.setName('account_password').setDescription('Replacement account password (optional)').setRequired(false)),
   new SlashCommandBuilder().setName('game').setDescription('Privately check a Steam game price').addStringOption(o=>o.setName('game_name').setDescription('Game name to search on Steam').setRequired(true).setMaxLength(90)),
+  new SlashCommandBuilder().setName('post').setDescription('Post a public game price card').addStringOption(o=>o.setName('game_name').setDescription('Steam game name (use this or Game ID)').setRequired(false).setMaxLength(90)).addStringOption(o=>o.setName('game_id').setDescription('Steam App/Game ID (use this or Game name)').setRequired(false).setMaxLength(20)).addNumberOption(o=>o.setName('our_price').setDescription('Your listed price in INR').setRequired(true).setMinValue(0).setMaxValue(1000000)).addStringOption(o=>o.setName('template').setDescription('Card branding style').setRequired(false).addChoices({name:"Gojo's Steam Lounge",value:'gojo'},{name:'IMPOSTER NETWORK',value:'imposter'},{name:'Standard',value:'standard'})),
   new SlashCommandBuilder().setName('game-price').setDescription('Admin: set or update the listed price for a Steam game').addStringOption(o=>o.setName('game_name').setDescription('Exact game name').setRequired(true)).addNumberOption(o=>o.setName('our_price').setDescription('Your price in INR (0 removes the listed price)').setRequired(true).setMinValue(0).setMaxValue(1000000))
  ].map(c=>c.toJSON());
  bot.once('ready',async()=>{console.log(`Discord bot logged in as ${bot.user.tag}`);await ensureGameSticky();try{const rest=new REST({version:'10'}).setToken(process.env.DISCORD_TOKEN);if(process.env.GUILD_ID&&process.env.CLIENT_ID){await rest.put(Routes.applicationGuildCommands(process.env.CLIENT_ID,process.env.GUILD_ID),{body:commands});console.log(`Guild slash commands registered for guild ${process.env.GUILD_ID}: /game, /game-price and other commands.`);}else if(process.env.CLIENT_ID){await rest.put(Routes.applicationCommands(process.env.CLIENT_ID),{body:commands});console.log('Global slash commands registered. Global command updates may take time to appear; set GUILD_ID for fast testing.');}else console.error('CLIENT_ID is missing: slash commands cannot be registered. Add CLIENT_ID in Render Environment, then restart/redeploy.');}catch(e){console.error('Command registration failed. Check CLIENT_ID, DISCORD_TOKEN, and GUILD_ID:',e?.stack||e);}});
@@ -308,6 +309,24 @@ async function startBot(){
        container.addTextDisplayComponents(new TextDisplayBuilder().setContent(`## ${game.name}\n**Steam Price:** ${game.steamPrice}\n**Our Price:** ${price?rupees(price.our_price):'Not listed'}\n**Game ID:** ${game.appId}`));
        return interaction.editReply({flags:MessageFlags.IsComponentsV2,components:[container]});
      } catch(e){console.error('Private /game lookup failed:',e?.stack||e);return interaction.editReply({content:'Could not fetch Steam details right now. Please try again shortly.'});}
+    }
+    if(interaction.commandName==='post'){
+     if(!isStaff(interaction))return interaction.reply({content:'Only staff or the server owner can publish game price cards.',ephemeral:true});
+     const gameName=interaction.options.getString('game_name');const gameId=interaction.options.getString('game_id');const ourPrice=interaction.options.getNumber('our_price',true);const template=interaction.options.getString('template')||'gojo';
+     if(Boolean(gameName)===Boolean(gameId))return interaction.reply({content:'Provide exactly one option: Game name OR Game ID.',ephemeral:true});
+     await interaction.deferReply({flags:MessageFlags.Ephemeral});
+     try{
+      const game=gameId?await steamSearchById(gameId.trim()):await steamSearch(gameName.trim());
+      if(!game)return interaction.editReply('No Steam game found. Check the game name or Steam App ID and try again.');
+      db.prepare('INSERT INTO game_prices(app_id,game_name,our_price,updated_by,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(app_id) DO UPDATE SET game_name=excluded.game_name,our_price=excluded.our_price,updated_by=excluded.updated_by,updated_at=excluded.updated_at').run(game.appId,game.name,ourPrice,interaction.user.id,new Date().toISOString());
+      const color=template==='gojo'?0x1677ff:template==='imposter'?0x8e44ad:0x36393f;
+      const brand=template==='gojo'?"GOJO'S STEAM LOUNGE":template==='imposter'?'IMPOSTER NETWORK':'GAME PRICE LIST';
+      const embed=new EmbedBuilder().setColor(color).setTitle(game.name).setDescription(`🟢 **OUR PRICE = ${rupees(ourPrice)}**  |  🔴 **STEAM PRICE = ${game.steamPrice}**\n\n🆔 **GAME ID:** ${game.appId}`).setImage(game.header||null).setFooter({text:`© ${brand} • All rights reserved.`});
+      const row=new ActionRowBuilder().addComponents(new ButtonBuilder().setLabel('» Buy Game').setStyle(ButtonStyle.Link).setURL(game.storeUrl));
+      const target=interaction.channel;
+      await target.send({embeds:[embed],components:[row],allowedMentions:{parse:[]}});
+      return interaction.editReply(`Published **${game.name}** (Game ID: ${game.appId}) in this channel.`);
+     }catch(e){console.error('/post game card failed:',e?.stack||e);return interaction.editReply('Could not publish the game card. Check the Render logs and try again.');}
     }
     if(interaction.commandName==='game-price'){
      if(!isStaff(interaction))return interaction.reply({content:'Only server staff or the server owner can edit game prices.',ephemeral:true});

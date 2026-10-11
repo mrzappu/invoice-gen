@@ -95,3 +95,8 @@ Do not commit production credentials or a database containing customer/account p
 - HTML ticket transcripts show profile avatars, display names, usernames, Discord user IDs, timestamps, message text, and attachment links.
 
 Back up your production database before deployment. The ZIP's `invoice.db` is a snapshot and may not contain the latest production invoices.
+
+
+## Public game price cards (`/post`)
+
+Staff/server owners can publish a public game card with `/post`. Provide exactly one of `game_name` or `game_id`, enter `our_price`, and optionally select `template` (`gojo`, `imposter`, or `standard`). The bot posts a titled card with green Our Price, red Steam Price, Game ID, Steam header image, Buy Game link button, and branded footer. Publishing also saves/updates the Our Price in SQLite so `/game` uses the same value. The command posts in the channel where it is invoked; use it in the desired public channel.
