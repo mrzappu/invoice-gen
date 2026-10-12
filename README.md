@@ -106,3 +106,10 @@ Staff/server owners can publish a public game card with `/post`. Provide exactly
 - The card displays the game name, Our Price, Steam Price, game image, Buy Game button inside the card, and the selected template footer.
 - `game_id` remains available as a search input, but the Game ID is not displayed in the public card.
 - The Buy Game button opens the configured Discord destination channel: https://discord.com/channels/1519204760316809297/1526896976505864214
+
+
+## Admin `/gen` — Steam metadata ZIP
+
+Use `/gen app_id:<Steam App ID>` to create a private downloadable ZIP for a game listed on the Steam Store. The command is restricted to the server owner, administrators, members with Manage Channels, or the configured `STAFF_ROLE_ID`. The ZIP includes `game-metadata.json` and `README.txt` with a Gojo's Steam Lounge copyright/license notice. It contains metadata only—no game content, Steam manifests, Lua files, or ownership bypass. The command uses Steam's public Store app-details endpoint.
+
+Install/download games through the official Steam client using an account that owns the game.
