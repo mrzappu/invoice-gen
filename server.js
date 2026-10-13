@@ -288,7 +288,6 @@ async function startBot(){
   new SlashCommandBuilder().setName('invoice-inspect').setDescription('Admin: inspect a saved invoice').addStringOption(o=>o.setName('invoice_id').setDescription('Invoice ID to inspect').setRequired(true)),
   new SlashCommandBuilder().setName('invoice-replacement').setDescription('Staff: create a replacement invoice and DM the PDF').addStringOption(o=>o.setName('invoice_id').setDescription('Invoice ID to replace').setRequired(true)).addStringOption(o=>o.setName('account_email').setDescription('Replacement account email / ID (optional)').setRequired(false)).addStringOption(o=>o.setName('account_password').setDescription('Replacement account password (optional)').setRequired(false)),
   new SlashCommandBuilder().setName('game').setDescription('Privately check a Steam game price').addStringOption(o=>o.setName('game_name').setDescription('Game name to search on Steam').setRequired(true).setMaxLength(90)),
-  new SlashCommandBuilder().setName('gen').setDescription('Admin: create a Steam game metadata ZIP for Gojo Steam Lounge').addStringOption(o=>o.setName('app_id').setDescription('Steam App ID (numbers only)').setRequired(true).setMaxLength(20)),
   new SlashCommandBuilder().setName('post').setDescription('Post a public game price card').addNumberOption(o=>o.setName('our_price').setDescription('Your listed price in INR').setRequired(true).setMinValue(0).setMaxValue(1000000)).addStringOption(o=>o.setName('game_name').setDescription('Steam game name (use this or Game ID)').setRequired(false).setMaxLength(90)).addStringOption(o=>o.setName('game_id').setDescription('Steam App/Game ID (use this or Game name)').setRequired(false).setMaxLength(20)).addStringOption(o=>o.setName('template').setDescription('Card branding style').setRequired(false).addChoices({name:"Gojo's Steam Lounge",value:'gojo'},{name:'IMPOSTER NETWORK',value:'imposter'},{name:'Standard',value:'standard'})),
   new SlashCommandBuilder().setName('game-price').setDescription('Admin: set or update the listed price for a Steam game').addStringOption(o=>o.setName('game_name').setDescription('Exact game name').setRequired(true)).addNumberOption(o=>o.setName('our_price').setDescription('Your price in INR (0 removes the listed price)').setRequired(true).setMinValue(0).setMaxValue(1000000))
  ].map(c=>c.toJSON());
@@ -311,27 +310,6 @@ async function startBot(){
        container.addTextDisplayComponents(new TextDisplayBuilder().setContent(`## ${game.name}\n**Steam Price:** ${game.steamPrice}\n**Our Price:** ${price?rupees(price.our_price):'Not listed'}\n**Game ID:** ${game.appId}`));
        return interaction.editReply({flags:MessageFlags.IsComponentsV2,components:[container]});
      } catch(e){console.error('Private /game lookup failed:',e?.stack||e);return interaction.editReply({content:'Could not fetch Steam details right now. Please try again shortly.'});}
-    }
-    if(interaction.commandName==='gen'){
-     if(!isStaff(interaction))return interaction.reply({content:'Only server administrators, configured staff, or the server owner can use /gen.',ephemeral:true});
-     const appId=interaction.options.getString('app_id',true).trim();
-     if(!/^\d{1,20}$/.test(appId))return interaction.reply({content:'Enter a valid numeric Steam App ID.',ephemeral:true});
-     await interaction.deferReply({flags:MessageFlags.Ephemeral});
-     try{
-      const game=await steamSearchById(appId);
-      if(!game)return interaction.editReply('No public Steam Store information was found for that App ID. Check the ID and try again.');
-      const metadata={brand:"GOJO'S STEAM LOUNGE",gameName:game.name,steamAppId:game.appId,steamStoreUrl:game.storeUrl,steamDbUrl:game.steamDbUrl,steamPriceIndia:game.steamPrice,headerImage:game.header||null,generatedAt:new Date().toISOString(),packageType:'metadata-only; no game files included'};
-      const readme=`GOJO'S STEAM LOUNGE — STEAM GAME METADATA\n\nGame: ${game.name}\nSteam App ID: ${game.appId}\nSteam Store: ${game.storeUrl}\nSteamDB: ${game.steamDbUrl}\nIndia Store Price at generation: ${game.steamPrice}\nHeader image: ${game.header||'Not available'}\nGenerated at: ${metadata.generatedAt}\n\nPACKAGE CONTENTS\nThis ZIP contains metadata only. It does not include the game's files, Steam manifest files, Lua files, license keys, or any method to bypass Steam ownership or access controls. Install/download the game through the official Steam client using an account that owns the game.\n\nCOPYRIGHT / LICENSE NOTICE\n© GOJO'S STEAM LOUNGE. All rights reserved.\nGame titles, artwork, trademarks, and other game-related materials belong to their respective owners. This metadata package is informational only; it does not transfer ownership, grant a game license, or grant permission to redistribute copyrighted game content. Please respect the applicable game publisher's terms and licenses.\n`;
-      const zip=new JSZip();
-      zip.file('game-metadata.json',JSON.stringify(metadata,null,2));
-      zip.file('README.txt',readme);
-      const buffer=await zip.generateAsync({type:'nodebuffer',compression:'DEFLATE',compressionOptions:{level:6}});
-      const filename=`gojo-steam-metadata-${game.appId}.zip`;
-      const card=new ContainerBuilder();
-      if(game.header)card.addMediaGalleryComponents(new MediaGalleryBuilder().addItems(new MediaGalleryItemBuilder().setURL(game.header).setDescription(game.name)));
-      card.addTextDisplayComponents(new TextDisplayBuilder().setContent(`## ${game.name}\n**Steam App ID:** ${game.appId}\n**Steam Price (India):** ${game.steamPrice}\n**Steam Store:** ${game.storeUrl}\n\nZIP contains metadata and a README copyright/license notice only. No game content, manifests, or Lua files are included.\n-# © GOJO'S STEAM LOUNGE`));
-      return interaction.editReply({components:[card],flags:MessageFlags.IsComponentsV2,files:[new AttachmentBuilder(buffer,{name:filename,description:'Steam game metadata only; no game files included.'})]});
-     }catch(e){console.error('/gen metadata ZIP failed:',e?.stack||e);return interaction.editReply('Could not generate the metadata ZIP. Check Render logs and try again.');}
     }
     if(interaction.commandName==='post'){
      if(!isStaff(interaction))return interaction.reply({content:'Only staff or the server owner can publish game price cards.',ephemeral:true});
