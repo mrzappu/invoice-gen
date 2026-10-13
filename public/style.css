@@ -36,3 +36,68 @@ td{color:#171717!important;border-bottom:1px solid #d8d8d8!important}
 .watermark{color:var(--theme)!important;opacity:.055!important}
 @media(max-width:600px){.invoice{padding:0 13px 18px!important}.top-strip{margin:0 -13px 18px!important}}
 @media print{.invoice{border:0!important;box-shadow:none!important}.top-strip{background:#111!important}.quote-banner,thead,th,.payable-line{print-color-adjust:exact!important;-webkit-print-color-adjust:exact!important}}
+
+
+/* Classic compact invoice layout — keeps all editor controls and fields intact */
+:root{--bg:#eef0f3;--card:#fff;--input:#fff;--border:#d9dde4;--text:#1b1b1b;--muted:#69707a;--accent:#111;--accent2:#444}
+body{background:#eef0f3;color:#202124}
+.topbar{background:#fff;border-bottom:1px solid #d9dde4;color:#111}
+.brand-mark{background:#111;color:#fff;border-radius:4px}
+.online-pill{color:#222;border-color:#bbb}
+.layout{max-width:1500px;grid-template-columns:minmax(320px,.86fr) minmax(0,1.14fr);gap:22px;padding:22px}
+.panel{background:#fff;border:1px solid #d9dde4;border-radius:8px;box-shadow:0 4px 18px #0000000a;color:#222}
+.panel h1,.preview-toolbar h2{color:#111}
+.eyebrow{color:#444}
+input,select,textarea{background:#fff;border-color:#cfd3da;border-radius:5px;color:#222}
+input:focus,select:focus,textarea:focus{border-color:#333;box-shadow:0 0 0 2px #00000010}
+.primary{background:#111;color:#fff}
+.actions button,.secondary{border-radius:5px}
+.preview-column{min-width:0}
+.preview-toolbar{max-width:760px;margin:0 auto 10px}
+.invoice{width:100%;max-width:760px;margin:0 auto;background:#fff;color:#111;border:0;border-top:5px solid #111;border-radius:0;padding:0 24px 18px;box-shadow:0 5px 22px #00000012;--theme:#111!important;--tag:#111!important;--water:#111!important;--seal-bg:#fff!important}
+.theme-standard,.theme-teal,.theme-purple,.theme-red,.theme-green,.theme-blue,.theme-orange,.theme-pink{--strip:#111!important;--tag:#111!important;--theme:#111!important;--water:#111!important;--seal-bg:#fff!important}
+.top-strip{height:0;margin:0;padding:0;overflow:hidden;background:#111}
+.invoice-head{padding-top:22px;gap:14px;align-items:flex-start}
+.invoice-head h2{font-size:clamp(24px,3vw,36px);line-height:1.05;color:#080808;letter-spacing:-.7px}
+.invoice-head p{color:#333;font-size:11px}
+.meta{font-size:10px}
+.type-badge{background:#111;color:#fff;border-radius:0;padding:6px 8px;font-size:8px}
+.quote-banner{background:#111;color:#fff;border-radius:0;margin:16px 0;padding:10px 8px;font-size:9px;letter-spacing:1.2px}
+.buyer-row{margin:16px 0;gap:12px}
+.buyer-info{gap:8px}
+.buyer-info small,.words-box small{font-size:8px;letter-spacing:1.3px;color:#666}
+.buyer-info b{font-size:11px;color:#111}
+.received-seal{width:86px;height:86px;flex-basis:86px;border:2px double #111;background:#fff;color:#111;gap:4px;padding:6px}
+.received-seal:before{border-color:#555;inset:4px}
+.received-seal span{font-size:8px;letter-spacing:1px}
+.received-seal b{font-size:9px}
+table{font-size:10px}
+thead{background:#111}
+th{padding:8px 6px;color:#fff;font-size:8px}
+td{padding:8px 6px;border-bottom:1px solid #ddd;color:#222}
+.summary{margin:12px 0 14px auto;width:min(100%,285px);font-size:10px}
+.sum-line{padding:5px 8px}
+.total-line{background:#eee;color:#111}
+.payable-line{background:#111;color:#fff;font-size:12px}
+.need-line{color:#111}
+.words-box{padding:9px 11px;background:#f4f4f4;border-left:3px solid #111}
+.words-box b{font-size:10px}
+.qr-section{margin-top:12px!important;padding:10px 12px!important;border:1px solid #ddd!important;border-radius:0!important;min-height:0!important;gap:12px!important}
+.qr-copy>b{font-size:9px!important;letter-spacing:1.4px;color:#555}
+#vQrAmount{font-size:18px!important;color:#111!important}
+#vQrId,.qr-copy p{font-size:9px!important;line-height:1.35!important;color:#555!important}
+#vQr{width:88px!important;height:88px!important;flex:0 0 88px!important;image-rendering:pixelated}
+.terms-box{margin-top:12px;border:1px solid #ddd;border-radius:0;padding:10px 12px}
+.terms-box h3,.invoice-footer h3{font-size:9px;letter-spacing:1px}
+.terms-box ol{font-size:9px;line-height:1.35}
+.invoice-footer{margin-top:14px;padding-top:10px;gap:10px}
+.invoice-footer p{font-size:9px;margin-bottom:4px}
+.signature-block{min-width:120px}
+.signature-font{font-size:30px}
+.thanks{margin-top:12px;padding-top:9px;gap:2px}
+.thanks b{font-size:9px}
+.thanks small{font-size:8px}
+.watermark{font-size:clamp(24px,4vw,40px);letter-spacing:2px;opacity:.045}
+@media(max-width:1000px){.layout{grid-template-columns:1fr;max-width:850px}.preview-column{grid-row:1}.invoice{max-width:720px}}
+@media(max-width:600px){.layout{padding:10px;gap:14px}.invoice{padding:0 12px 12px;max-width:100%}.invoice-head{padding-top:16px}.invoice-head h2{font-size:22px}.quote-banner{font-size:7px;letter-spacing:.5px;padding:8px 4px}.received-seal{width:72px;height:72px;flex-basis:72px}.received-seal span{font-size:7px}.received-seal b{font-size:8px}.buyer-info b{font-size:9px}.summary{width:min(100%,250px)}.qr-section{padding:8px!important}.qr-copy p{max-width:220px}.terms-box{padding:8px}.invoice-footer{gap:8px}.signature-block{min-width:95px}#vQr{width:76px!important;height:76px!important;flex-basis:76px!important}}
+@media print{@page{size:A4;margin:12mm}body{background:#fff!important}.invoice{width:100%;max-width:none;margin:0;padding:0 5mm 5mm;box-shadow:none;border-top:4px solid #111;zoom:1}.top-strip{display:none}.quote-banner,.type-badge,.total-line,.payable-line,.words-box,.received-seal{-webkit-print-color-adjust:exact;print-color-adjust:exact}.invoice-inner,.invoice-head,.buyer-row,.summary,.terms-box,.invoice-footer,.thanks{break-inside:avoid}}
