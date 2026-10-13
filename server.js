@@ -45,6 +45,8 @@ CREATE TABLE IF NOT EXISTS invoice_replacements (new_invoice_id TEXT PRIMARY KEY
 try { db.exec('ALTER TABLE tickets ADD COLUMN product_index INTEGER NOT NULL DEFAULT 0'); } catch (e) { if (!String(e.message).includes('duplicate column name')) throw e; }
 try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_invoice_replacements_one_use ON invoice_replacements(original_invoice_id COLLATE NOCASE)'); } catch (e) { console.warn('Could not add replacement one-use index (legacy duplicate replacement records may exist); runtime checks remain enabled:', e.message); }
 app.use(express.json({ limit: '2mb' }));
+// Serve the QR generator locally so invoice QR codes do not depend on a third-party CDN.
+app.use('/vendor/qrcode', express.static(path.join(__dirname, 'node_modules', 'qrcode', 'build')));
 app.use(express.static(path.join(__dirname, 'public')));
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
 function safeEqual(a, b) { const aa=Buffer.from(String(a||'')); const bb=Buffer.from(String(b||'')); return aa.length===bb.length && crypto.timingSafeEqual(aa,bb); }
