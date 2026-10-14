@@ -131,7 +131,7 @@ td{padding:8px 6px;border-bottom:1px solid #ddd;color:#222}
 .invoice .payable-line{display:none}
 .invoice .need-line{display:none}
 .invoice .words-box{display:none!important}
-.invoice .qr-section{display:none!important}
+.invoice .qr-section{display:flex}
 .invoice .terms-box{margin-top:18px;padding:0;border:0;border-radius:0;max-width:56%}
 .invoice .terms-box h3{font-size:9px;margin-bottom:5px}
 .invoice .terms-box ol{font-size:8px;line-height:1.4;padding-left:14px}
@@ -145,7 +145,7 @@ td{padding:8px 6px;border-bottom:1px solid #ddd;color:#222}
 .invoice .watermark{font-size:42px;letter-spacing:2px;opacity:.035}
 @media(max-width:1000px){.layout{grid-template-columns:minmax(0,1fr);max-width:850px}.preview-column{grid-row:1}.invoice{max-width:680px}}
 @media(max-width:600px){.invoice{padding:22px 18px 24px;width:100%;font-size:10px!important}.invoice .invoice-head{min-height:90px}.invoice .invoice-head h2{font-size:23px}.invoice .summary{width:58%}.invoice .terms-box{max-width:100%}.invoice .invoice-footer{gap:8px}.invoice .signature-block{min-width:100px}}
-@media print{@page{size:A4;margin:0}body{margin:0}.invoice{width:680px;max-width:680px;margin:0 auto;box-shadow:none;padding:30px 36px 32px;border:0;border-top:4px solid #111;min-height:0;break-inside:avoid}.invoice .qr-section{display:none!important}}
+@media print{@page{size:A4;margin:0}body{margin:0}.invoice{width:680px;max-width:680px;margin:0 auto;box-shadow:none;padding:30px 36px 32px;border:0;border-top:4px solid #111;min-height:0;break-inside:avoid}.invoice .qr-section{display:flex}}
 
 /* Final reference-matched compact invoice layout */
 .invoice{width:100%;max-width:680px;margin:0 auto;padding:28px 34px 30px;border:0;border-top:3px solid #111;border-radius:0;box-shadow:0 10px 28px #0002;min-height:0;font-family:Arial,Helvetica,sans-serif!important;color:#080808!important;background:#fff}
@@ -184,7 +184,7 @@ td{padding:8px 6px;border-bottom:1px solid #ddd;color:#222}
 .invoice .payable-line{display:flex;background:#eee;color:#111;font-weight:900}
 .invoice .need-line{display:flex;font-weight:900}
 .invoice .words-box{display:none!important}
-.invoice .qr-section{display:flex!important;align-items:center;justify-content:space-between;gap:14px;margin:16px 0 12px;padding:10px 12px;border:1px solid #222;border-radius:0;background:#fff;min-height:92px;break-inside:avoid}
+.invoice .qr-section{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:16px 0 12px;padding:10px 12px;border:1px solid #222;border-radius:0;background:#fff;min-height:92px;break-inside:avoid}
 .invoice .qr-copy{display:flex;flex:1;min-width:0;flex-direction:column;gap:4px}
 .invoice .qr-copy>b{font-size:9px;font-weight:900;letter-spacing:1px;color:#080808}
 .invoice .qr-copy>span{font-size:15px;font-weight:900;color:#080808}
@@ -216,3 +216,6 @@ td{padding:8px 6px;border-bottom:1px solid #ddd;color:#222}
 .invoice .qr-section{min-height:88px!important}
 .invoice #vQr{object-fit:contain;flex:0 0 auto!important}
 @media(max-width:600px){.invoice .invoice-head{min-height:118px!important}.invoice .meta .document-title{font-size:21px!important}.invoice .meta-line{grid-template-columns:52px minmax(0,1fr)!important;font-size:8px!important}.invoice #vId,.invoice #vDate{font-size:8px!important}}
+
+/* QR visibility is controlled by the Show QR checkbox in app.js. */
+.invoice #vQrSection[style*="display: none"]{display:none!important}
