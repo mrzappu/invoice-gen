@@ -219,3 +219,5 @@ td{padding:8px 6px;border-bottom:1px solid #ddd;color:#222}
 
 /* QR visibility is controlled by the Show QR checkbox in app.js. */
 .invoice #vQrSection[style*="display: none"]{display:none!important}
+
+.top-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.auth-link{font-size:12px;font-weight:700;text-decoration:none;color:inherit;border:1px solid #3b465d;border-radius:9px;padding:8px 11px;background:rgba(255,255,255,.04)}.auth-link:hover{background:rgba(255,255,255,.1)}
