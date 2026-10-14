@@ -45,7 +45,7 @@ CREATE TABLE IF NOT EXISTS invoice_activity (id INTEGER PRIMARY KEY AUTOINCREMEN
 `);
 try { db.exec('ALTER TABLE tickets ADD COLUMN product_index INTEGER NOT NULL DEFAULT 0'); } catch (e) { if (!String(e.message).includes('duplicate column name')) throw e; }
 try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_invoice_replacements_one_use ON invoice_replacements(original_invoice_id COLLATE NOCASE)'); } catch (e) { console.warn('Could not add replacement one-use index (legacy duplicate replacement records may exist); runtime checks remain enabled:', e.message); }
-app.use(express.json({ limit: '2mb' }));
+app.use(express.json({ limit: '8mb' }));
 // Serve the QR generator locally so invoice QR codes do not depend on a third-party CDN.
 app.use('/vendor/qrcode', express.static(path.join(__dirname, 'node_modules', 'qrcode', 'build')));
 app.get('/api/qr', async (req,res)=>{try{const text=String(req.query.text||'');const size=Math.max(72,Math.min(160,Number(req.query.size)||104));if(!text||text.length>2000)return res.status(400).json({error:'A valid QR payload is required.'});const dataUrl=await require('qrcode').toDataURL(text,{width:size,margin:1,errorCorrectionLevel:'M',color:{dark:'#111111',light:'#ffffff'}});res.set('Cache-Control','no-store');res.json({dataUrl});}catch(err){console.error('QR API error:',err);res.status(500).json({error:'QR generation failed on server.'});}});
@@ -157,11 +157,24 @@ function makeInvoicePdf(payload){
   const footerY=doc.page.height-54;doc.moveTo(left,footerY).lineTo(right,footerY).lineWidth(.7).strokeColor('#e2e7ef').stroke();doc.fillColor('#667085').font('InvoiceSans').fontSize(8).text(String(payload.footerName||seller)+' · Thank you for your business.',left,footerY+12,{width:tableW,align:'center'});doc.end();
  }catch(e){reject(e);}});
 }
-async function notifyInvoiceDiscord(payload, action, user){
+function decodeRenderedInvoiceImage(dataUrl){
+ if(typeof dataUrl!=='string'||!dataUrl.startsWith('data:image/png;base64,'))return null;
+ try{const buffer=Buffer.from(dataUrl.slice('data:image/png;base64,'.length),'base64');if(!buffer.length||buffer.length>5*1024*1024)return null;return buffer;}catch{return null;}
+}
+function makePdfFromRenderedImage(imageBuffer, payload){
+ return new Promise((resolve,reject)=>{try{
+  const doc=new PDFDocument({size:'A4',margin:0,info:{Title:`Invoice ${payload.invoiceId||''}`,Author:String(payload.sellerName||payload.brandName||'Invoice Studio'),Subject:'Invoice Studio rendered invoice'}});
+  const chunks=[];doc.on('data',c=>chunks.push(c));doc.on('end',()=>resolve(Buffer.concat(chunks)));doc.on('error',reject);
+  // Embed the exact generator preview image so the PDF matches the website output.
+  doc.image(imageBuffer,0,0,{fit:[doc.page.width,doc.page.height],align:'center',valign:'center'});doc.end();
+ }catch(e){reject(e);}});
+}
+async function notifyInvoiceDiscord(payload, action, user, renderedImageDataUrl){
  const channelId=process.env.INVOICE_LOG_CHANNEL_ID||process.env.INVOICE_NOTIFICATION_CHANNEL_ID;if(!channelId||!bot)return;
  try{
   const channel=await bot.channels.fetch(channelId);if(!channel?.isTextBased()||!channel.send)return;
-  const pdf=await makeInvoicePdf(payload);const seller=String(payload.sellerName||payload.shopName||payload.brandName||'Seller not provided');
+  const renderedImage=decodeRenderedInvoiceImage(renderedImageDataUrl);
+  const pdf=renderedImage?await makePdfFromRenderedImage(renderedImage,payload):await makeInvoicePdf(payload);const seller=String(payload.sellerName||payload.shopName||payload.brandName||'Seller not provided');
   const creatorMention=user?.id?`<@${user.id}>`:String(user?.username||'Website user (not logged in)');
   const products=(payload.products||[]).map(p=>`• **${short(p.name||'Item',100)}** × ${Number(p.qty)||1} — ₹${((Number(p.qty)||0)*(Number(p.price)||0)).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2})}`).join('\n')||'• No line items';
   const total=payload.payable??payload.total??payload.grandTotal??payload.totalAmount??'—';
@@ -181,18 +194,26 @@ ${short(products,1800)}
 # ${totalText}
 **Payment:** ${short(payload.paymentMethod||'—',80)}
 
-📎 The professionally formatted invoice PDF is attached.`));
-  await channel.send({flags:MessageFlags.IsComponentsV2,components:[card],files:[new AttachmentBuilder(pdf,{name:`${String(payload.invoiceId||'invoice').replace(/[^a-z0-9_-]/gi,'_')}.pdf`,description:`PDF invoice ${payload.invoiceId||''}`})],allowedMentions:{parse:[],users:user?.id?[String(user.id)]:[]}});
+🖼️ Full invoice preview and matching PDF are attached below.`));
+  const files=[];
+  const safeInvoiceName=String(payload.invoiceId||'invoice').replace(/[^a-z0-9_-]/gi,'_');
+  const components=[card];
+  if(renderedImage){
+   files.push(new AttachmentBuilder(renderedImage,{name:'invoice-preview.png',description:`Exact invoice generator preview for ${payload.invoiceId||''}`}));
+   card.addMediaGalleryComponents(new MediaGalleryBuilder().addItems(new MediaGalleryItemBuilder().setURL('attachment://invoice-preview.png').setDescription(`Invoice ${payload.invoiceId||''} — exact generator design`)));
+  }
+  files.push(new AttachmentBuilder(pdf,{name:`${safeInvoiceName}.pdf`,description:`PDF invoice ${payload.invoiceId||''} matching the generator design`}));
+  await channel.send({flags:MessageFlags.IsComponentsV2,components,files,allowedMentions:{parse:[],users:user?.id?[String(user.id)]:[]}});
  }catch(e){console.warn('Invoice Discord notification failed:',e.message);}
 }
 
 app.get('/health',(_req,res)=>res.status(200).json({ok:true,service:'invoice-bot',database:'sqlite'}));
 app.get('/api/invoices/:id',apiAuth,(req,res)=>{const found=getInvoice(req.params.id);if(!found)return res.status(404).json({error:'Invoice not found.'});const safe={...found,products:(found.products||[]).map(({accountEmail,accountPassword,...p})=>p)};res.json(safe);});
 app.post('/api/invoices',apiAuth,async(req,res)=>{try{
- const body=req.body||{};const user=sessionUser(req);const prior=getInvoice(body.invoiceId);const record=saveInvoice({...body,createdBy:user?{id:user.id,username:user.username}:undefined});
+ const body=req.body||{};const renderedImageDataUrl=body.renderedInvoiceImage;const {renderedInvoiceImage:_discardedImage,...invoiceBody}=body;const user=sessionUser(req);const prior=getInvoice(invoiceBody.invoiceId);const record=saveInvoice({...invoiceBody,createdBy:user?{id:user.id,username:user.username}:undefined});
  const action=prior?'updated':'created';const stamp=new Date().toISOString();
  db.prepare('INSERT INTO invoice_activity(invoice_id,action,created_at,creator_id,creator_username,payload) VALUES(?,?,?,?,?,?)').run(record.invoiceId,action,stamp,user?.id||record.createdBy?.id||null,user?.username||record.createdBy?.username||'Website user',JSON.stringify(record));
- notifyInvoiceDiscord(record,action,user).catch(()=>{});
+ notifyInvoiceDiscord(record,action,user,renderedImageDataUrl).catch(()=>{});
  res.status(201).json({ok:true,invoiceId:record.invoiceId,savedAt:record.savedAt,action});
  }catch(e){res.status(400).json({error:e.message||'Could not save invoice.'});}});
 // Sensitive product credentials are not returned by the public invoice API and are never rendered into invoice exports.
