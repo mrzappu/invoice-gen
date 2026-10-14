@@ -47,6 +47,7 @@ try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_invoice_replacements_one_us
 app.use(express.json({ limit: '2mb' }));
 // Serve the QR generator locally so invoice QR codes do not depend on a third-party CDN.
 app.use('/vendor/qrcode', express.static(path.join(__dirname, 'node_modules', 'qrcode', 'build')));
+app.get('/api/qr', async (req,res)=>{try{const text=String(req.query.text||'');const size=Math.max(72,Math.min(160,Number(req.query.size)||104));if(!text||text.length>2000)return res.status(400).json({error:'A valid QR payload is required.'});const dataUrl=await require('qrcode').toDataURL(text,{width:size,margin:1,errorCorrectionLevel:'M',color:{dark:'#111111',light:'#ffffff'}});res.set('Cache-Control','no-store');res.json({dataUrl});}catch(err){console.error('QR API error:',err);res.status(500).json({error:'QR generation failed on server.'});}});
 app.use(express.static(path.join(__dirname, 'public')));
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
 function safeEqual(a, b) { const aa=Buffer.from(String(a||'')); const bb=Buffer.from(String(b||'')); return aa.length===bb.length && crypto.timingSafeEqual(aa,bb); }
