@@ -25,9 +25,9 @@ function drawQrFallback(message){const canvas=$('vQr');const ctx=canvas.getConte
 async function updateQr(c){
  const section=$('vQrSection');
  const eligible=/INVOICE|QUOTATION/i.test(val('docType'))&&!/RECEIPT/i.test(val('docType'));
- const enabled=$('qrEnabled').checked&&eligible;
+ const enabled=!!$('qrEnabled').checked&&eligible;
  section.style.display=enabled?'flex':'none';
- if(!enabled)return;
+ if(!enabled){qrRequestToken++;qrLastPayload='';return;}
  const upi=val('qrUpiId').trim();
  const payee=val('qrPayee').trim()||val('sellerName').trim()||'Shop';
  const amount=Math.max(0,c.payable-c.totalPaid);
@@ -35,15 +35,19 @@ async function updateQr(c){
  $('vQrId').textContent=upi?`Pay to: ${upi}`:'Add payment ID in settings';
  $('vQrFooter').textContent=val('qrFooter');
  const size=Math.max(72,Math.min(160,Number(val('qrSize'))||104));
- const canvas=$('vQr');canvas.width=size;canvas.height=size;canvas.style.width=size+'px';canvas.style.height=size+'px';
- if(!upi){drawQrFallback('Set payment ID');qrLastPayload='';return;}
+ const canvas=$('vQr');
+ if(!upi){if(canvas.width!==size)canvas.width=size;if(canvas.height!==size)canvas.height=size;canvas.style.width=size+'px';canvas.style.height=size+'px';drawQrFallback('Set payment ID');qrLastPayload='';return;}
  const method=val('paymentMethod');
  const payload=/UPI/i.test(method)
   ?`upi://pay?pa=${encodeURIComponent(upi)}&pn=${encodeURIComponent(payee)}&am=${amount.toFixed(2)}&cu=INR&tn=${encodeURIComponent('Invoice '+invoiceId)}`
   :`Payment method: ${method}\nPayee: ${payee}\nPayment ID / address: ${upi}\nInvoice: ${invoiceId}\nAmount due: ${amount.toFixed(2)}\nPlease verify details before paying.`;
  const renderKey=payload+'|'+size;
- if(renderKey===qrLastPayload)return;
+ // Do not reset canvas dimensions when the QR is already current: setting width/height clears it.
+ if(renderKey===qrLastPayload&&canvas.width===size&&canvas.height===size)return;
  const token=++qrRequestToken;
+ if(canvas.width!==size)canvas.width=size;
+ if(canvas.height!==size)canvas.height=size;
+ canvas.style.width=size+'px';canvas.style.height=size+'px';
  try{
   if(window.QRCode&&typeof window.QRCode.toCanvas==='function'){
    await new Promise((resolve,reject)=>window.QRCode.toCanvas(canvas,payload,{width:size,margin:1,errorCorrectionLevel:'M',color:{dark:'#111111',light:'#ffffff'}},err=>err?reject(err):resolve()));
@@ -64,7 +68,7 @@ function applyPreset(key){if(key==='custom')return;const p=presets[key];if(!p)re
 function record(){const c=computeInvoice();return {invoiceId,preset:val('preset'),templateName:val('preset')==='gojo'?"Gojo's Steam Lounge":val('preset')==='imposter'?'IMPOSTER NETWORK':val('preset')==='standard'?'Standard':'Custom',theme:val('theme'),themeColor:({'blue':'#1688ff','purple':'#7c3aed','teal':'#0f9d91','red':'#dc2626','green':'#16a34a','orange':'#ea580c','pink':'#db2777','standard':'#c49a38'}[val('theme')]||'#2563eb'),primaryColor:({'blue':'#1688ff','purple':'#7c3aed','teal':'#0f9d91','red':'#dc2626','green':'#16a34a','orange':'#ea580c','pink':'#db2777','standard':'#c49a38'}[val('theme')]||'#2563eb'),watermark:val('watermark'),showWatermark:!!$('showWatermark').checked,brandName:val('brandName'),sellerName:val('sellerName'),shopName:val('sellerName'),tagline:val('tagline'),documentType:val('docType'),buyerName:val('buyerName')||'Customer',discordUserId:val('discordUserId').trim(),buyerDiscordId:val('discordUserId').trim(),handledBy:val('handledBy'),paymentMethod:val('paymentMethod'),date:val('dateTime'),products:c.products,subtotal:c.subtotal,charges:c.charges,total:c.total,discount:c.discount,payable:c.payable,totalPaid:c.totalPaid,needToPay:c.needToPay,footerName:val('footerName'),contact:val('contact'),terms:val('terms'),qrEnabled:$('qrEnabled').checked,qrUpiId:val('qrUpiId').trim(),qrPayee:val('qrPayee').trim(),qrFooter:val('qrFooter'),qrSize:Number(val('qrSize')),invoiceFont:val('invoiceFont'),invoiceFontSize:Number(val('invoiceFontSize')),invoiceTextColor:val('invoiceTextColor'),invoiceAccentColor:val('invoiceAccentColor')}}
 async function saveInvoice(){const r=record();if(!r.buyerName||r.buyerName==='Customer'){setStatus('Add the buyer name before saving.');return}try{const response=await fetch('/api/invoices',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(r)});const data=await response.json();if(!response.ok)throw new Error(data.error||'Save failed');setStatus('Saved invoice '+data.invoiceId+' for Discord /invoice-search lookup.')}catch(e){setStatus('Could not save invoice: '+e.message)}}
 function setStatus(s){$('status').textContent=s}
-async function captureInvoiceHighRes(){await updateQr(computeInvoice());const source=await html2canvas($('invoice'),{scale:3,backgroundColor:'#ffffff',useCORS:true,logging:false,windowWidth:Math.max(document.documentElement.clientWidth, $('invoice').scrollWidth)});const target=document.createElement('canvas');target.width=679;target.height=957;const ctx=target.getContext('2d',{alpha:false});ctx.fillStyle='#ffffff';ctx.fillRect(0,0,target.width,target.height);ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality='high';ctx.drawImage(source,0,0,source.width,source.height,0,0,target.width,target.height);return target}
+async function captureInvoiceHighRes(){const qrEnabled=$('qrEnabled').checked&&/INVOICE|QUOTATION/i.test(val('docType'))&&!/RECEIPT/i.test(val('docType'));await updateQr(computeInvoice());if(qrEnabled){const qr=$('vQr');if(qr.width<1||qr.height<1)throw new Error('QR canvas is unavailable');if(val('qrUpiId').trim()&&qrLastPayload==='')throw new Error('QR is not ready yet. Please wait a moment and try again.');await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));}const source=await html2canvas($('invoice'),{scale:3,backgroundColor:'#ffffff',useCORS:true,logging:false,windowWidth:Math.max(document.documentElement.clientWidth, $('invoice').scrollWidth),windowHeight:Math.max(document.documentElement.clientHeight, $('invoice').scrollHeight)});const target=document.createElement('canvas');target.width=679;target.height=957;const ctx=target.getContext('2d',{alpha:false});ctx.fillStyle='#ffffff';ctx.fillRect(0,0,target.width,target.height);ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality='high';ctx.drawImage(source,0,0,source.width,source.height,0,0,target.width,target.height);return target}
 async function downloadImage(){setStatus('Rendering crisp 679 × 957 image…');try{const canvas=await captureInvoiceHighRes();const a=document.createElement('a');a.download=invoiceId+'.png';a.href=canvas.toDataURL('image/png');a.click();setStatus('Invoice image downloaded at 679 × 957 pixels.')}catch(e){setStatus('Image export failed: '+e.message)}}
 async function downloadPDF(){setStatus('Creating PDF…');try{const canvas=await captureInvoiceHighRes();const {jsPDF}=window.jspdf;const pdf=new jsPDF({orientation:'p',unit:'mm',format:'a4'});const margin=10,pageW=210,usableW=pageW-margin*2;const img=canvas.toDataURL('image/png');const imgH=canvas.height*usableW/canvas.width;pdf.addImage(img,'PNG',margin,10,usableW,imgH,undefined,'MEDIUM');pdf.save(invoiceId+'.pdf');setStatus('PDF downloaded.')}catch(e){setStatus('PDF export failed: '+e.message)}}
 function resetAll(){if(!confirm('Reset invoice form and start a new invoice?'))return;$('invoiceForm').reset();$('productRows').innerHTML='';invoiceId=makeInvoiceId();applyPreset('standard');$('docType').value='QUOTATION / INVOICE';$('charges').value='0';$('discountValue').value='0';$('previousCash').value='0';$('newCash').value='0';$('terms').value="Delivery: Digital products are delivered through Discord DM.\nSupport: Contact our staff if you experience an issue.\nRefunds: Digital products are subject to the shop's refund policy.";addProduct();updateClock();updateInvoice();setStatus('New invoice ready.')}
