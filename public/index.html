@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<header class="topbar"><div><span class="brand-mark">IN</span><span><b>INVOICE STUDIO</b><small>Digital Store Toolkit</small></span></div><nav class="top-actions"><a href="/auth/discord" class="auth-link">Login with Discord</a><a href="/admin" class="auth-link">Admin Logs</a><span class="online-pill">● LIVE PREVIEW</span></nav></header>
+<header class="topbar"><div><span class="brand-mark">IN</span><span><b>INVOICE STUDIO</b><small>Digital Store Toolkit</small></span></div><nav class="top-actions"><a id="discordLoginLink" href="/auth/discord" class="auth-link">Login with Discord</a><span id="discordAccount" class="discord-account" hidden></span><a id="adminLogsLink" href="/admin" class="auth-link" hidden>Admin Dashboard</a><a id="discordLogoutLink" href="/logout" class="auth-link" hidden>Logout</a><span class="online-pill">● LIVE PREVIEW</span></nav></header>
 <main class="layout">
 <section class="panel form-panel"><div class="panel-heading"><div><p class="eyebrow">DOCUMENT BUILDER</p><h1>Create an invoice</h1></div><span class="step-count">01 / 12</span></div>
 <form id="invoiceForm">
@@ -38,4 +38,8 @@
 </main>
 <footer class="site-footer">INVOICE STUDIO <span>Built for digital shops</span></footer>
 <script src="/vendor/qrcode/qrcode.min.js"></script><script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script><script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script><script src="app.js"></script>
+<script>
+(async()=>{try{const r=await fetch('/auth/me',{credentials:'same-origin',cache:'no-store'});const d=await r.json();const login=document.getElementById('discordLoginLink'),account=document.getElementById('discordAccount'),admin=document.getElementById('adminLogsLink'),logout=document.getElementById('discordLogoutLink');if(d.loggedIn&&d.user){login.hidden=true;account.hidden=false;account.textContent='Signed in: '+d.user.username+' · '+d.user.id;logout.hidden=false;admin.hidden=!d.user.isAdmin;}else{login.hidden=false;account.hidden=true;logout.hidden=true;admin.hidden=true;}}catch(e){}}
+)();
+</script>
 </body></html>

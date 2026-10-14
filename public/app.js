@@ -7,7 +7,7 @@ const presets = {
  imposter:{theme:'purple',brandName:'IMPOSTER NETWORK',sellerName:'IMPOSTER NETWORK',tagline:'DIGITAL PRODUCTS • GAMES • SERVICES',watermark:'IMPOSTER NETWORK',footerName:'IMPOSTER NETWORK',sealTop:'IMPOSTER',sealMid:'★ VERIFIED ★',sealBottom:'NETWORK',showSeal:true,showWatermark:true,showSignature:true}
 };
 let invoiceId = makeInvoiceId();
-function makeInvoiceId(){return 'gojo#'+String(Math.floor(10000+Math.random()*90000))+'Xyz'}
+function makeInvoiceId(){const d=new Date();const day=[d.getFullYear(),String(d.getMonth()+1).padStart(2,'0'),String(d.getDate()).padStart(2,'0')].join('');const code=Array.from({length:5},()=> 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[Math.floor(Math.random()*32)]).join('');return `INV-${day}-${code}`}
 function val(id){return $(id).value}
 function num(id){const n=Number($(id).value);return Number.isFinite(n)&&n>0?n:0}
 function money(n){return '₹'+(Number(n)||0).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2})}
