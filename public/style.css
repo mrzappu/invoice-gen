@@ -225,3 +225,22 @@ td{padding:8px 6px;border-bottom:1px solid #ddd;color:#222}
 /* Signed-in Discord account badge */
 .discord-account{font-size:11px;font-weight:750;color:#9beadd;border:1px solid #4bdac744;background:#4bdac710;border-radius:9px;padding:8px 11px;max-width:260px;overflow-wrap:anywhere}
 [hidden]{display:none!important}
+
+
+/* Accessible main-site light/dark toggle. Invoice preview/export remains unchanged. */
+.theme-toggle{border:1px solid #aeb4bf;border-radius:999px;padding:8px 12px;background:#fff;color:#17191d;font-weight:800;font-size:11px;cursor:pointer;white-space:nowrap;box-shadow:0 2px 8px #00000010}
+.theme-toggle:hover{transform:translateY(-1px);box-shadow:0 4px 12px #00000018}
+button:disabled{opacity:.65;cursor:wait;filter:saturate(.7)}
+.top-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+body.dark-mode{background:#0b0d12!important;color:#f2f4f8!important;--bg:#0b0d12;--card:#151922;--input:#10141b;--border:#303744;--text:#f2f4f8;--muted:#a4adbb}
+body.dark-mode .topbar{background:#101319!important;border-color:#303744!important;color:#f5f6f8!important}
+body.dark-mode .panel,body.dark-mode .preview-toolbar{background:#151922!important;border-color:#303744!important;color:#f2f4f8!important;box-shadow:0 10px 32px #0005}
+body.dark-mode .panel h1,body.dark-mode .preview-toolbar h2,body.dark-mode .topbar b{color:#f5f6f8!important}
+body.dark-mode label,body.dark-mode .privacy-note,body.dark-mode .step-count{color:#b7c0ce!important}
+body.dark-mode input,body.dark-mode select,body.dark-mode textarea{background:#0d1118!important;color:#f2f4f8!important;border-color:#3a4352!important}
+body.dark-mode .actions button,body.dark-mode .secondary{background:#242b37!important;color:#f5f6f8!important;border-color:#414b5b!important}
+body.dark-mode .primary{background:linear-gradient(135deg,#f0f2f6,#b8c0ce)!important;color:#11151b!important;border-color:transparent!important}
+body.dark-mode .theme-toggle{background:#f4f5f7;color:#11151b;border-color:#fff}
+body.dark-mode .site-footer{background:#101319!important;color:#aeb7c5!important;border-color:#303744!important}
+body.dark-mode .auth-link{color:#f0f2f6!important;border-color:#414b5b!important}
+@media(max-width:700px){.topbar{height:auto;min-height:70px;padding:10px 14px;gap:10px;align-items:flex-start}.top-actions{justify-content:flex-end;gap:6px}.theme-toggle{font-size:10px;padding:7px 9px}.online-pill{display:none}}
