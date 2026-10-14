@@ -203,3 +203,16 @@ td{padding:8px 6px;border-bottom:1px solid #ddd;color:#222}
 .invoice .watermark{font-size:36px;letter-spacing:1px;opacity:.025;color:#111}
 @media(max-width:600px){.invoice{padding:22px 18px 24px;width:100%;font-size:9px!important}.invoice .invoice-head{grid-template-columns:1fr 1fr;min-height:105px;gap:10px}.invoice .meta .document-title{font-size:23px}.invoice .buyer-info{max-width:100%;gap:10px}.invoice .summary{width:58%}.invoice .terms-box{max-width:100%}.invoice .invoice-footer{gap:8px}.invoice .signature-block{min-width:90px}.invoice #vQr{width:72px!important;height:72px!important;max-width:72px;max-height:72px}}
 @media print{@page{size:A4;margin:0}.invoice{width:680px;max-width:680px;margin:0 auto;box-shadow:none;padding:28px 34px 30px;border:0;border-top:3px solid #111;min-height:0;break-inside:avoid}.invoice .qr-section{display:flex!important}}
+
+/* Final reference positioning and compact metadata fix */
+.invoice .invoice-head{min-height:140px!important;margin-bottom:22px!important}
+.invoice .meta{width:100%;max-width:230px;margin-left:auto;align-items:stretch!important}
+.invoice .meta .document-title{text-align:right!important;margin:0 0 10px!important;font-size:30px!important;white-space:nowrap}
+.invoice .meta-line{display:grid!important;grid-template-columns:64px minmax(0,1fr)!important;gap:6px!important;align-items:baseline!important;width:100%;font-size:9px!important;line-height:1.35!important}
+.invoice .meta-line b{text-align:left;white-space:nowrap}
+.invoice .meta-line span{text-align:right!important;white-space:normal;overflow-wrap:anywhere;min-width:0}
+.invoice #vId{font-size:9px!important;letter-spacing:0!important;font-weight:700}
+.invoice #vDate{font-size:9px!important}
+.invoice .qr-section{min-height:88px!important}
+.invoice #vQr{object-fit:contain;flex:0 0 auto!important}
+@media(max-width:600px){.invoice .invoice-head{min-height:118px!important}.invoice .meta .document-title{font-size:21px!important}.invoice .meta-line{grid-template-columns:52px minmax(0,1fr)!important;font-size:8px!important}.invoice #vId,.invoice #vDate{font-size:8px!important}}
