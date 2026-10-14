@@ -118,3 +118,11 @@ Install/download games through the official Steam client using an account that o
 - `INVOICE_LOG_CHANNEL_ID` is the Discord text channel ID where invoice creation/update reports and a PDF attachment are sent. `INVOICE_NOTIFICATION_CHANNEL_ID` is accepted as an alternate name. Give the bot View Channel, Send Messages, and Attach Files permissions there.
 - The invoice website remains usable without logging in; invoice records made without OAuth show `Website user` rather than a verified Discord identity. To attribute invoices to a real Discord account, use Login with Discord before creating/saving them.
 - `/admin` lists invoice activity with creator, buyer, date, products, totals, and the stored record. Only IDs in `ADMIN_DISCORD_IDS` can access it. Private account credentials are stored in the database payload; restrict database and admin access accordingly.
+
+## Admin dashboard and invoice activity improvements
+
+- `/admin` now uses a responsive dashboard with activity metrics, search, action filters, formatted JSON inspection, and CSV/JSON exports. The dashboard requires Discord OAuth and an ID listed in `ADMIN_DISCORD_IDS`.
+- The main page checks `/auth/me` and switches the Discord login link to a signed-in account badge, Admin Dashboard link (admins only), and Logout link when a session exists.
+- Invoice IDs use `INV-YYYYMMDD-XXXXX` (date plus a random uppercase alphanumeric code) for newly generated invoices. Existing stored invoice IDs are not rewritten.
+- Invoice-created/updated Discord logs are sent as a Discord Components V2 card with a verified creator/seller mention when the creator is logged in, plus a professionally laid-out PDF attachment.
+- The Discord PDF uses the bundled DejaVu Sans fonts for currency and Unicode support. PDF notifications omit private account email/password fields. Keep the admin page and its full-payload exports private because those records may contain sensitive product account information.

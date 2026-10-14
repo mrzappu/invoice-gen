@@ -120,8 +120,9 @@ app.get('/auth/me',(req,res)=>{const user=sessionUser(req);res.json({loggedIn:Bo
 app.get('/logout',(req,res)=>{res.setHeader('Set-Cookie','invoice_session=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0');res.redirect('/');});
 app.get('/admin',(req,res)=>{
  const user=sessionUser(req);if(!user)return res.redirect('/auth/discord');
- if(!isAdminUser(user))return res.status(403).send('<h1>403 — Admin access required</h1><p>Your Discord account is not in ADMIN_DISCORD_IDS.</p><a href="/">Back to Invoice Studio</a>');
- res.type('html').send(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Invoice Admin</title><style>body{font:14px system-ui;background:#f3f4f6;color:#171717;margin:0;padding:24px}header{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}h1{margin:0}.muted{color:#666}.card{background:#fff;border:1px solid #ddd;border-radius:12px;padding:16px;margin:18px 0;overflow:auto}input,button{padding:10px;border:1px solid #ccc;border-radius:8px}table{border-collapse:collapse;width:100%;min-width:850px}th,td{text-align:left;border-bottom:1px solid #e5e5e5;padding:10px;vertical-align:top}th{background:#111;color:#fff}pre{white-space:pre-wrap;max-width:500px}a{color:#174ea6}</style></head><body><header><div><h1>Invoice Admin</h1><div class="muted">Logged in as ${escapeHtml(user.username)} · Discord ID ${escapeHtml(user.id)}</div></div><nav><a href="/">Invoice Studio</a> · <a href="/logout">Logout</a></nav></header><div class="card"><input id="q" placeholder="Search invoice ID, creator, buyer..." style="width:min(480px,90%)"><button onclick="load()">Search / Refresh</button><span id="status" class="muted"></span></div><div class="card"><table><thead><tr><th>Date</th><th>Invoice ID</th><th>Action</th><th>Creator</th><th>Buyer</th><th>Items</th><th>Total</th><th>Full record</th></tr></thead><tbody id="rows"></tbody></table></div><script>async function load(){const q=document.getElementById('q').value;const r=await fetch('/api/admin/invoices?q='+encodeURIComponent(q));const d=await r.json();if(!r.ok){document.getElementById('status').textContent=d.error||'Failed';return}document.getElementById('status').textContent=' '+d.items.length+' activity records';document.getElementById('rows').innerHTML=d.items.map(x=>'<tr><td>'+esc(x.created_at)+'</td><td>'+esc(x.invoice_id)+'</td><td>'+esc(x.action)+'</td><td>'+esc((x.creator_username||'Unknown')+' ('+(x.creator_id||'—')+')')+'</td><td>'+esc(x.payload.buyerName||'—')+'</td><td>'+esc((x.payload.products||[]).map(p=>(p.name||'Item')+' × '+(p.qty||1)+' @ '+(p.price||0)).join('\\\\n'))+'</td><td>'+esc(x.payload.total||x.payload.grandTotal||x.payload.totalAmount||'—')+'</td><td><details><summary>View details</summary><pre>'+esc(JSON.stringify(x.payload,null,2))+'</pre></details></td></tr>').join('')}function esc(v){return String(v??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}load();</script></body></html>`);
+ if(!isAdminUser(user))return res.status(403).send('<!doctype html><html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><body style="background:#080b14;color:#eef2ff;font:16px system-ui;padding:40px"><h1>403 — Admin access required</h1><p>Your Discord account is signed in, but it is not listed in ADMIN_DISCORD_IDS.</p><p><a style="color:#9ba7ff" href="/">Back to Invoice Studio</a> · <a style="color:#9ba7ff" href="/logout">Logout</a></p></body></html>');
+ try { const html=fs.readFileSync(path.join(__dirname,'public','admin.html'),'utf8').replaceAll('__USERNAME__',escapeHtml(user.username)).replaceAll('__USERID__',escapeHtml(user.id));res.type('html').send(html); }
+ catch(e){console.error('Admin dashboard render failed:',e.message);res.status(500).send('Admin dashboard file is missing.');}
 });
 app.get('/api/admin/invoices',requireAdmin,(req,res)=>{
  const q=String(req.query.q||'').slice(0,150);
@@ -129,36 +130,69 @@ app.get('/api/admin/invoices',requireAdmin,(req,res)=>{
  res.json({items:rows.map(r=>({...r,payload:(()=>{try{return JSON.parse(r.payload)}catch{return {}}})()}))});
 });
 function makeInvoicePdf(payload){
- return new Promise((resolve,reject)=>{try{const doc=new PDFDocument({size:'A4',margin:42});const chunks=[];doc.on('data',c=>chunks.push(c));doc.on('end',()=>resolve(Buffer.concat(chunks)));doc.on('error',reject);
- doc.fontSize(22).font('Helvetica-Bold').text(String(payload.brandName||payload.sellerName||'INVOICE'),{align:'left'});doc.moveDown(.3);doc.fontSize(10).font('Helvetica').text(`Invoice: ${payload.invoiceId||'—'}     Date: ${payload.dateTime||payload.savedAt||new Date().toISOString()}`);doc.moveDown();doc.fontSize(12).font('Helvetica-Bold').text('INVOICE TO');doc.fontSize(10).font('Helvetica').text(String(payload.buyerName||'—'));if(payload.contact)doc.text(String(payload.contact));doc.moveDown();doc.fontSize(12).font('Helvetica-Bold').text('ITEMS');doc.moveDown(.3);for(const p of (payload.products||[])){doc.font('Helvetica-Bold').text(String(p.name||'Product'));doc.font('Helvetica').text(`Qty: ${p.qty||1}    Price: ${p.price||0}    Line total: ${((Number(p.qty)||0)*(Number(p.price)||0)).toFixed(2)}`);doc.moveDown(.3);}doc.moveDown();doc.font('Helvetica-Bold').fontSize(14).text(`TOTAL: ${payload.total||payload.grandTotal||payload.totalAmount||'—'}`);doc.fontSize(9).font('Helvetica').text(`Payment method: ${payload.paymentMethod||'—'}`);doc.end();}catch(e){reject(e);}});
+ return new Promise((resolve,reject)=>{try{
+  const doc=new PDFDocument({size:'A4',margin:44,info:{Title:`Invoice ${payload.invoiceId||''}`,Author:String(payload.sellerName||payload.brandName||'Invoice Studio'),Subject:'Invoice document'}});const chunks=[];doc.on('data',c=>chunks.push(c));doc.on('end',()=>resolve(Buffer.concat(chunks)));doc.on('error',reject);
+  doc.registerFont('InvoiceSans',path.join(__dirname,'fonts','DejaVuSans.ttf'));doc.registerFont('InvoiceSansBold',path.join(__dirname,'fonts','DejaVuSans-Bold.ttf'));
+  const requestedAccent=String(payload.invoiceAccentColor||payload.themeColor||payload.primaryColor||'#6478f5');const accent=/^#[0-9a-fA-F]{6}$/.test(requestedAccent)?requestedAccent:'#6478f5';
+  const money=n=>'₹'+(Number(n)||0).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const brand=String(payload.brandName||payload.sellerName||'INVOICE STUDIO');const seller=String(payload.sellerName||payload.shopName||brand);const buyer=String(payload.buyerName||'Customer');
+  const date=String(payload.date||payload.dateTime||payload.savedAt||new Date().toLocaleString('en-IN'));
+  const products=Array.isArray(payload.products)?payload.products:[];const subtotal=Number(payload.subtotal)||products.reduce((n,p)=>n+(Number(p.qty)||0)*(Number(p.price)||0),0);const charges=Number(payload.charges)||0;const discount=Number(payload.discount)||0;const payable=Number(payload.payable??payload.total??payload.grandTotal??payload.totalAmount)||Math.max(0,subtotal+charges-discount);
+  doc.save();doc.rect(0,0,doc.page.width,12).fill(accent);doc.restore();
+  doc.moveDown(1.2);doc.fillColor('#101827').font('InvoiceSansBold').fontSize(22).text(brand.toUpperCase(),{width:320});
+  doc.moveDown(.25);doc.fillColor('#687386').font('InvoiceSans').fontSize(9).text(String(payload.tagline||'DIGITAL PRODUCTS · SERVICES · SUPPORT'),{width:320});
+  const rightX=doc.page.width-190;doc.fillColor(accent).font('InvoiceSansBold').fontSize(22).text(String(payload.documentType||payload.docType||'INVOICE').replace(/[_]/g,' '),rightX,49,{width:145,align:'right'});
+  doc.fillColor('#687386').font('InvoiceSans').fontSize(9).text('INVOICE NUMBER',rightX,79,{width:145,align:'right'});doc.fillColor('#111827').font('InvoiceSansBold').fontSize(11).text(String(payload.invoiceId||'—'),rightX,92,{width:145,align:'right'});doc.fillColor('#687386').font('InvoiceSans').fontSize(9).text(`DATE  ${date}`,rightX,112,{width:145,align:'right'});
+  doc.moveTo(44,148).lineTo(doc.page.width-44,148).lineWidth(1).strokeColor('#e2e7ef').stroke();
+  let y=169;doc.fillColor(accent).font('InvoiceSansBold').fontSize(9).text('SELLER / ISSUED BY',44,y);doc.fillColor('#172033').font('InvoiceSansBold').fontSize(11).text(seller,44,y+17,{width:230});if(payload.contact)doc.fillColor('#657084').font('InvoiceSans').fontSize(9).text(String(payload.contact),44,y+34,{width:230});
+  doc.fillColor(accent).font('InvoiceSansBold').fontSize(9).text('BILL TO',320,y);doc.fillColor('#172033').font('InvoiceSansBold').fontSize(11).text(buyer,320,y+17,{width:220});if(payload.discordUserId||payload.buyerDiscordId)doc.fillColor('#657084').font('InvoiceSans').fontSize(9).text(`Discord ID: ${String(payload.discordUserId||payload.buyerDiscordId)}`,320,y+34,{width:220});
+  y=236;const left=44,right=doc.page.width-44,tableW=right-left;doc.roundedRect(left,y,tableW,28,4).fill('#111827');doc.fillColor('#ffffff').font('InvoiceSansBold').fontSize(8.5).text('DESCRIPTION',left+12,y+9,{width:230});doc.text('QTY',left+255,y+9,{width:42,align:'right'});doc.text('UNIT PRICE',left+305,y+9,{width:75,align:'right'});doc.text('AMOUNT',right-88,y+9,{width:76,align:'right'});y+=38;
+  if(!products.length){doc.fillColor('#667085').font('InvoiceSans').fontSize(10).text('No line items added.',left+12,y);y+=24;}
+  products.forEach((p,i)=>{const qty=Number(p.qty)||0,price=Number(p.price)||0,line=qty*price;const name=String(p.name||'Digital product');const rowH=Math.max(30,doc.heightOfString(name,{width:220,font:'InvoiceSans',fontSize:9})+14);if(y+rowH>doc.page.height-175){doc.addPage();y=55;}if(i%2===0)doc.roundedRect(left,y-6,tableW,rowH,3).fill('#f6f8fb');doc.fillColor('#172033').font('InvoiceSans').fontSize(9).text(name,left+12,y,{width:225});doc.text(String(qty),left+255,y,{width:42,align:'right'});doc.text(money(price),left+305,y,{width:75,align:'right'});doc.font('InvoiceSansBold').text(money(line),right-88,y,{width:76,align:'right'});y+=rowH;});
+  y+=13;if(y>doc.page.height-170){doc.addPage();y=55;}doc.moveTo(left,y).lineTo(right,y).lineWidth(1).strokeColor('#e2e7ef').stroke();y+=16;
+  const labelX=right-220,valueX=right-100;const summaryRow=(label,value,bold=false)=>{doc.fillColor(bold?'#111827':'#667085').font(bold?'Helvetica-Bold':'Helvetica').fontSize(bold?12:10).text(label,labelX,y,{width:115});doc.fillColor('#111827').font(bold?'Helvetica-Bold':'Helvetica').fontSize(bold?12:10).text(value,valueX,y,{width:100,align:'right'});y+=bold?25:19;};summaryRow('Subtotal',money(subtotal));if(charges)summaryRow('Charges',money(charges));if(discount)summaryRow('Discount','−'+money(discount));doc.roundedRect(labelX-9,y-4,right-(labelX-9),34,4).fill(accent);doc.fillColor('#ffffff').font('InvoiceSansBold').fontSize(12).text('TOTAL DUE',labelX,y+6,{width:115});doc.text(money(payable),valueX,y+6,{width:100,align:'right'});y+=47;
+  if(payload.totalPaid!==undefined&&payload.totalPaid!==null){doc.fillColor('#667085').font('InvoiceSans').fontSize(9).text(`Amount received: ${money(payload.totalPaid)}     Balance due: ${money(payload.needToPay)}`,left,y,{width:tableW});y+=20;}
+  doc.fillColor('#667085').font('InvoiceSans').fontSize(9).text(`Payment method: ${String(payload.paymentMethod||'—')}`,left,y,{width:tableW});y+=24;
+  if(payload.terms){doc.fillColor('#111827').font('InvoiceSansBold').fontSize(9).text('TERMS & NOTES',left,y);y+=14;doc.fillColor('#667085').font('InvoiceSans').fontSize(8.5).text(String(payload.terms).slice(0,1200),left,y,{width:tableW,lineGap:2});}
+  const footerY=doc.page.height-54;doc.moveTo(left,footerY).lineTo(right,footerY).lineWidth(.7).strokeColor('#e2e7ef').stroke();doc.fillColor('#667085').font('InvoiceSans').fontSize(8).text(String(payload.footerName||seller)+' · Thank you for your business.',left,footerY+12,{width:tableW,align:'center'});doc.end();
+ }catch(e){reject(e);}});
 }
 async function notifyInvoiceDiscord(payload, action, user){
  const channelId=process.env.INVOICE_LOG_CHANNEL_ID||process.env.INVOICE_NOTIFICATION_CHANNEL_ID;if(!channelId||!bot)return;
  try{
-  const channel=await bot.channels.fetch(channelId);if(!channel?.isTextBased())return;
-  const pdf=await makeInvoicePdf(payload);
-  const creator=user?`${user.username} (Discord ID ${user.id})`:'Website user (not logged in)';
-  const body=[
-   `🧾 **Invoice ${action}**`,
-   `**Invoice ID:** ${short(payload.invoiceId,100)}`,
-   `**Buyer:** ${short(payload.buyerName,150)}`,
-   `**Creator:** ${short(creator,180)}`,
-   `**Date:** ${short(payload.dateTime||payload.savedAt||new Date().toISOString(),100)}`,
-   `**Items:** ${short((payload.products||[]).map(p=>`${p.name} × ${p.qty} @ ${p.price}`).join(', '),900)}`,
-   `**Total:** ${short(payload.total||payload.grandTotal||payload.totalAmount||'—',100)}`,
-   `**Payment:** ${short(payload.paymentMethod||'—',80)}`
-  ].join('\n');
-  await channel.send({content:body,files:[new AttachmentBuilder(pdf,{name:`${String(payload.invoiceId||'invoice').replace(/[^a-z0-9_-]/gi,'_')}.pdf`})],allowedMentions:{parse:[]}});
+  const channel=await bot.channels.fetch(channelId);if(!channel?.isTextBased()||!channel.send)return;
+  const pdf=await makeInvoicePdf(payload);const seller=String(payload.sellerName||payload.shopName||payload.brandName||'Seller not provided');
+  const creatorMention=user?.id?`<@${user.id}>`:String(user?.username||'Website user (not logged in)');
+  const products=(payload.products||[]).map(p=>`• **${short(p.name||'Item',100)}** × ${Number(p.qty)||1} — ₹${((Number(p.qty)||0)*(Number(p.price)||0)).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2})}`).join('\n')||'• No line items';
+  const total=payload.payable??payload.total??payload.grandTotal??payload.totalAmount??'—';
+  const totalText=(typeof total==='number'||(String(total).trim()!==''&&!Number.isNaN(Number(total))))?'₹'+Number(total).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2}):short(total,60);
+  const card=new ContainerBuilder().setAccentColor(action==='updated'?0xf0b64b:0x6d7cff);
+  card.addTextDisplayComponents(new TextDisplayBuilder().setContent(`## 🧾 Invoice ${action==='updated'?'Updated':'Created'}
+**Invoice ID**  \`${short(payload.invoiceId,90)}\`
+**Seller / Creator:** ${creatorMention}
+**Shop:** ${short(seller,150)}
+**Buyer:** ${short(payload.buyerName,150)}
+**Date:** ${short(payload.date||payload.dateTime||payload.savedAt||new Date().toISOString(),100)}`));
+  card.addSeparatorComponents(new SeparatorBuilder());
+  card.addTextDisplayComponents(new TextDisplayBuilder().setContent(`### Items
+${short(products,1800)}
+
+### Total Due
+# ${totalText}
+**Payment:** ${short(payload.paymentMethod||'—',80)}
+
+📎 The professionally formatted invoice PDF is attached.`));
+  await channel.send({flags:MessageFlags.IsComponentsV2,components:[card],files:[new AttachmentBuilder(pdf,{name:`${String(payload.invoiceId||'invoice').replace(/[^a-z0-9_-]/gi,'_')}.pdf`,description:`PDF invoice ${payload.invoiceId||''}`})],allowedMentions:{parse:[],users:user?.id?[String(user.id)]:[]}});
  }catch(e){console.warn('Invoice Discord notification failed:',e.message);}
 }
 
 app.get('/health',(_req,res)=>res.status(200).json({ok:true,service:'invoice-bot',database:'sqlite'}));
 app.get('/api/invoices/:id',apiAuth,(req,res)=>{const found=getInvoice(req.params.id);if(!found)return res.status(404).json({error:'Invoice not found.'});const safe={...found,products:(found.products||[]).map(({accountEmail,accountPassword,...p})=>p)};res.json(safe);});
 app.post('/api/invoices',apiAuth,async(req,res)=>{try{
- const body=req.body||{};const user=sessionUser(req);const prior=getInvoice(body.invoiceId);const record=saveInvoice({...body,createdBy:user?{id:user.id,username:user.username}:body.createdBy});
+ const body=req.body||{};const user=sessionUser(req);const prior=getInvoice(body.invoiceId);const record=saveInvoice({...body,createdBy:user?{id:user.id,username:user.username}:undefined});
  const action=prior?'updated':'created';const stamp=new Date().toISOString();
  db.prepare('INSERT INTO invoice_activity(invoice_id,action,created_at,creator_id,creator_username,payload) VALUES(?,?,?,?,?,?)').run(record.invoiceId,action,stamp,user?.id||record.createdBy?.id||null,user?.username||record.createdBy?.username||'Website user',JSON.stringify(record));
- notifyInvoiceDiscord(record,action,user||record.createdBy).catch(()=>{});
+ notifyInvoiceDiscord(record,action,user).catch(()=>{});
  res.status(201).json({ok:true,invoiceId:record.invoiceId,savedAt:record.savedAt,action});
  }catch(e){res.status(400).json({error:e.message||'Could not save invoice.'});}});
 // Sensitive product credentials are not returned by the public invoice API and are never rendered into invoice exports.
