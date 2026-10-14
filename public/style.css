@@ -146,3 +146,60 @@ td{padding:8px 6px;border-bottom:1px solid #ddd;color:#222}
 @media(max-width:1000px){.layout{grid-template-columns:minmax(0,1fr);max-width:850px}.preview-column{grid-row:1}.invoice{max-width:680px}}
 @media(max-width:600px){.invoice{padding:22px 18px 24px;width:100%;font-size:10px!important}.invoice .invoice-head{min-height:90px}.invoice .invoice-head h2{font-size:23px}.invoice .summary{width:58%}.invoice .terms-box{max-width:100%}.invoice .invoice-footer{gap:8px}.invoice .signature-block{min-width:100px}}
 @media print{@page{size:A4;margin:0}body{margin:0}.invoice{width:680px;max-width:680px;margin:0 auto;box-shadow:none;padding:30px 36px 32px;border:0;border-top:4px solid #111;min-height:0;break-inside:avoid}.invoice .qr-section{display:none!important}}
+
+/* Final reference-matched compact invoice layout */
+.invoice{width:100%;max-width:680px;margin:0 auto;padding:28px 34px 30px;border:0;border-top:3px solid #111;border-radius:0;box-shadow:0 10px 28px #0002;min-height:0;font-family:Arial,Helvetica,sans-serif!important;color:#080808!important;background:#fff}
+.invoice .top-strip{display:none!important}
+.invoice .invoice-inner{position:relative}
+.invoice .invoice-head{display:grid;grid-template-columns:1fr 1fr;gap:20px;align-items:start;min-height:125px;margin:0 0 20px}
+.invoice .invoice-brand{padding-top:2px;min-width:0}
+.invoice .invoice-brand h2{font-size:13px!important;line-height:1.15;font-weight:800;letter-spacing:.2px;margin:0 0 5px;color:#080808}
+.invoice .invoice-brand p{font-size:8px!important;line-height:1.35;margin:0;color:#222;font-weight:700}
+.invoice .meta{display:flex;flex-direction:column;align-items:stretch;text-align:left;gap:4px;font-size:9px;color:#111;min-width:0}
+.invoice .meta .document-title{font-size:28px;line-height:1.05;letter-spacing:.2px;font-weight:900;text-align:right;margin:0 0 12px;color:#050505}
+.invoice .meta-line{display:grid;grid-template-columns:auto auto;justify-content:space-between;gap:12px;font-size:9px;line-height:1.3}
+.invoice .meta-line b{font-weight:800}
+.invoice .meta-line span{text-align:right;overflow-wrap:anywhere}
+.invoice .type-badge{align-self:flex-end;background:#080808;color:#fff;border-radius:0;font-size:7px;letter-spacing:.8px;padding:5px 7px;margin-top:4px}
+.invoice .quote-banner{display:none!important}
+.invoice .buyer-row{display:grid;grid-template-columns:1fr;align-items:start;margin:0 0 18px;min-height:54px}
+.invoice .buyer-info{display:grid;grid-template-columns:1fr 1fr;gap:12px 22px;max-width:72%}
+.invoice .buyer-info>div{display:flex;flex-direction:column;gap:2px}
+.invoice .buyer-info>div:nth-child(3){grid-column:1/-1}
+.invoice .buyer-info small{font-size:8px;letter-spacing:1px;font-weight:900;color:#111}
+.invoice .buyer-info b{font-size:9px;font-weight:800;color:#111;overflow-wrap:anywhere}
+.invoice .received-seal{display:none!important}
+.invoice .table-wrap{border-top:3px solid #080808;padding-top:5px;overflow:visible}
+.invoice table{width:100%;border-collapse:collapse;table-layout:auto;font-size:9px!important}
+.invoice thead{background:#080808}
+.invoice th{background:#080808;color:#fff!important;font-size:8px!important;font-weight:900;letter-spacing:.3px;padding:7px 6px;text-transform:none}
+.invoice td{padding:9px 6px;border-bottom:0;font-size:9px!important;font-weight:700;color:#080808!important;overflow-wrap:anywhere}
+.invoice th:nth-child(2),.invoice td:nth-child(2){text-align:left;min-width:130px}
+.invoice td:nth-child(3),.invoice td:nth-child(4),.invoice td:nth-child(5),.invoice th:nth-child(3),.invoice th:nth-child(4),.invoice th:nth-child(5){text-align:right}
+.invoice .summary{margin:8px 0 12px auto;width:48%;font-size:9px;font-weight:700}
+.invoice .sum-line{padding:5px 6px;border-bottom:0;font-size:9px}
+.invoice .sum-line b{font-weight:900}
+.invoice .total-line{background:#080808;color:#fff!important}
+.invoice .total-line *{color:#fff!important;font-weight:900}
+.invoice .payable-line{display:flex;background:#eee;color:#111;font-weight:900}
+.invoice .need-line{display:flex;font-weight:900}
+.invoice .words-box{display:none!important}
+.invoice .qr-section{display:flex!important;align-items:center;justify-content:space-between;gap:14px;margin:16px 0 12px;padding:10px 12px;border:1px solid #222;border-radius:0;background:#fff;min-height:92px;break-inside:avoid}
+.invoice .qr-copy{display:flex;flex:1;min-width:0;flex-direction:column;gap:4px}
+.invoice .qr-copy>b{font-size:9px;font-weight:900;letter-spacing:1px;color:#080808}
+.invoice .qr-copy>span{font-size:15px;font-weight:900;color:#080808}
+.invoice .qr-copy small,.invoice .qr-copy p{font-size:8px;line-height:1.35;color:#222;margin:0;overflow-wrap:anywhere}
+.invoice #vQr{display:block;flex:0 0 auto;width:82px!important;height:82px!important;max-width:82px;max-height:82px;image-rendering:pixelated;background:#fff}
+.invoice .terms-box{margin-top:14px;padding:0;border:0;border-radius:0;max-width:60%;break-inside:avoid}
+.invoice .terms-box h3{font-size:9px;font-weight:900;margin-bottom:5px;text-transform:none;color:#080808}
+.invoice .terms-box ol{font-size:8px;line-height:1.4;padding-left:14px;color:#222}
+.invoice .invoice-footer{margin-top:16px;padding-top:10px;border-top:1px solid #111;align-items:flex-end;gap:14px;break-inside:avoid}
+.invoice .invoice-footer h3{font-size:9px;font-weight:900;margin-bottom:5px;color:#080808}
+.invoice .invoice-footer p,.invoice .invoice-footer>div:first-child>b{font-size:9px;color:#222}
+.invoice .signature-block{min-width:115px}
+.invoice .signature-font{font-size:22px}
+.invoice .signature-block small{font-size:8px}
+.invoice .thanks{display:none!important}
+.invoice .watermark{font-size:36px;letter-spacing:1px;opacity:.025;color:#111}
+@media(max-width:600px){.invoice{padding:22px 18px 24px;width:100%;font-size:9px!important}.invoice .invoice-head{grid-template-columns:1fr 1fr;min-height:105px;gap:10px}.invoice .meta .document-title{font-size:23px}.invoice .buyer-info{max-width:100%;gap:10px}.invoice .summary{width:58%}.invoice .terms-box{max-width:100%}.invoice .invoice-footer{gap:8px}.invoice .signature-block{min-width:90px}.invoice #vQr{width:72px!important;height:72px!important;max-width:72px;max-height:72px}}
+@media print{@page{size:A4;margin:0}.invoice{width:680px;max-width:680px;margin:0 auto;box-shadow:none;padding:28px 34px 30px;border:0;border-top:3px solid #111;min-height:0;break-inside:avoid}.invoice .qr-section{display:flex!important}}
