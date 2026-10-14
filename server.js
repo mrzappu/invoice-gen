@@ -3,6 +3,7 @@ const express = require('express');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const os = require('os');
 const multer = require('multer');
 const sharp = require('sharp');
 const PDFDocument = require('pdfkit');
@@ -42,6 +43,7 @@ CREATE TABLE IF NOT EXISTS game_prices (app_id TEXT PRIMARY KEY, game_name TEXT 
 CREATE TABLE IF NOT EXISTS bot_settings (setting_key TEXT PRIMARY KEY, setting_value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS invoice_replacements (new_invoice_id TEXT PRIMARY KEY COLLATE NOCASE, original_invoice_id TEXT NOT NULL COLLATE NOCASE, ticket_id INTEGER, created_by TEXT NOT NULL, template_name TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS invoice_activity (id INTEGER PRIMARY KEY AUTOINCREMENT, invoice_id TEXT NOT NULL, action TEXT NOT NULL, created_at TEXT NOT NULL, creator_id TEXT, creator_username TEXT, payload TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS admin_login_history (id INTEGER PRIMARY KEY AUTOINCREMENT, discord_id TEXT NOT NULL, username TEXT NOT NULL, avatar TEXT, logged_in_at TEXT NOT NULL);
 `);
 try { db.exec('ALTER TABLE tickets ADD COLUMN product_index INTEGER NOT NULL DEFAULT 0'); } catch (e) { if (!String(e.message).includes('duplicate column name')) throw e; }
 try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_invoice_replacements_one_use ON invoice_replacements(original_invoice_id COLLATE NOCASE)'); } catch (e) { console.warn('Could not add replacement one-use index (legacy duplicate replacement records may exist); runtime checks remain enabled:', e.message); }
@@ -111,7 +113,9 @@ app.get('/auth/discord/callback',async(req,res)=>{
   const token=await tokenResponse.json();if(!tokenResponse.ok||!token.access_token)throw new Error(token.error_description||'Discord token exchange failed');
   const userResponse=await fetch('https://discord.com/api/users/@me',{headers:{Authorization:`Bearer ${token.access_token}`}});
   const user=await userResponse.json();if(!userResponse.ok||!user.id)throw new Error('Could not retrieve Discord profile.');
-  const session=signValue({user:{id:user.id,username:user.global_name||user.username,discriminator:user.discriminator||'0',avatar:user.avatar||null},exp:Date.now()+7*24*60*60*1000});
+  const profile={id:String(user.id),username:user.global_name||user.username,discriminator:user.discriminator||'0',avatar:user.avatar||null};
+  try{db.prepare('INSERT INTO admin_login_history(discord_id,username,avatar,logged_in_at) VALUES(?,?,?,?)').run(profile.id,profile.username,profile.avatar,new Date().toISOString());}catch(e){console.warn('Could not record Discord login history:',e.message);}
+  const session=signValue({user:profile,exp:Date.now()+7*24*60*60*1000});
   res.setHeader('Set-Cookie',`invoice_session=${session}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=604800`);
   res.redirect('/');
  }catch(e){console.error('Discord OAuth failed:',e.message);res.status(502).send('Discord login failed. Check OAuth configuration and redirect URL in Render.');}
@@ -121,13 +125,63 @@ app.get('/logout',(req,res)=>{res.setHeader('Set-Cookie','invoice_session=; Http
 app.get('/admin',(req,res)=>{
  const user=sessionUser(req);if(!user)return res.redirect('/auth/discord');
  if(!isAdminUser(user))return res.status(403).send('<!doctype html><html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><body style="background:#080b14;color:#eef2ff;font:16px system-ui;padding:40px"><h1>403 — Admin access required</h1><p>Your Discord account is signed in, but it is not listed in ADMIN_DISCORD_IDS.</p><p><a style="color:#9ba7ff" href="/">Back to Invoice Studio</a> · <a style="color:#9ba7ff" href="/logout">Logout</a></p></body></html>');
- try { const html=fs.readFileSync(path.join(__dirname,'public','admin.html'),'utf8').replaceAll('__USERNAME__',escapeHtml(user.username)).replaceAll('__USERID__',escapeHtml(user.id));res.type('html').send(html); }
+ try { const avatarUrl=user.avatar?`https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.${String(user.avatar).startsWith('a_')?'gif':'png'}?size=128`:`https://cdn.discordapp.com/embed/avatars/${Number(BigInt(user.id)%6n)}.png`;const html=fs.readFileSync(path.join(__dirname,'public','admin.html'),'utf8').replaceAll('__USERNAME__',escapeHtml(user.username)).replaceAll('__USERID__',escapeHtml(user.id)).replaceAll('__AVATAR_URL__',escapeHtml(avatarUrl)).replaceAll('__DISCRIMINATOR__',escapeHtml(user.discriminator||'0'));res.type('html').send(html); }
  catch(e){console.error('Admin dashboard render failed:',e.message);res.status(500).send('Admin dashboard file is missing.');}
 });
 app.get('/api/admin/invoices',requireAdmin,(req,res)=>{
  const q=String(req.query.q||'').slice(0,150);
- const rows=q?db.prepare(`SELECT * FROM invoice_activity WHERE invoice_id LIKE ? OR creator_username LIKE ? OR creator_id LIKE ? OR payload LIKE ? ORDER BY id DESC LIMIT 500`).all(`%${q}%`,`%${q}%`,`%${q}%`,`%${q}%`):db.prepare('SELECT * FROM invoice_activity ORDER BY id DESC LIMIT 500').all();
- res.json({items:rows.map(r=>({...r,payload:(()=>{try{return JSON.parse(r.payload)}catch{return {}}})()}))});
+ const rows=q?db.prepare(`SELECT * FROM invoice_activity WHERE invoice_id LIKE ? OR creator_username LIKE ? OR creator_id LIKE ? OR payload LIKE ? ORDER BY id DESC LIMIT 1000`).all(`%${q}%`,`%${q}%`,`%${q}%`,`%${q}%`):db.prepare('SELECT * FROM invoice_activity ORDER BY id DESC LIMIT 1000').all();
+ res.set('Cache-Control','no-store');res.json({items:rows.map(r=>({...r,payload:(()=>{try{return JSON.parse(r.payload)}catch{return {}}})()}))});
+});
+app.get('/api/admin/profile',requireAdmin,(req,res)=>{
+ const user=req.sessionUser;const last=db.prepare('SELECT logged_in_at FROM admin_login_history WHERE discord_id=? ORDER BY id DESC LIMIT 1').get(user.id);
+ res.set('Cache-Control','no-store');res.json({profile:{id:user.id,username:user.username,discriminator:user.discriminator||'0',avatar:user.avatar||null,isAdmin:true,lastLogin:last?.logged_in_at||null},loginCount:db.prepare('SELECT COUNT(*) AS n FROM admin_login_history WHERE discord_id=?').get(user.id).n});
+});
+app.get('/api/admin/logins',requireAdmin,(req,res)=>{
+ const rows=db.prepare('SELECT id,discord_id,username,avatar,logged_in_at FROM admin_login_history ORDER BY id DESC LIMIT 500').all();res.set('Cache-Control','no-store');res.json({items:rows});
+});
+app.put('/api/admin/invoices/:id',requireAdmin,(req,res)=>{
+ try{const original=getInvoice(req.params.id);if(!original)return res.status(404).json({error:'Invoice not found.'});const incoming=req.body?.payload;if(!incoming||typeof incoming!=='object'||Array.isArray(incoming))return res.status(400).json({error:'Send the edited invoice as a JSON object in payload.'});
+  const payload={...incoming,invoiceId:String(incoming.invoiceId||req.params.id).trim(),buyerName:String(incoming.buyerName||original.buyerName||'').trim(),createdBy:incoming.createdBy||{id:req.sessionUser.id,username:req.sessionUser.username}};
+  const record=saveInvoice(payload);const stamp=new Date().toISOString();db.prepare('INSERT INTO invoice_activity(invoice_id,action,created_at,creator_id,creator_username,payload) VALUES(?,?,?,?,?,?)').run(record.invoiceId,'admin edited',stamp,req.sessionUser.id,req.sessionUser.username,JSON.stringify(record));
+  res.json({ok:true,invoiceId:record.invoiceId,savedAt:record.savedAt});
+ }catch(e){res.status(400).json({error:e.message||'Could not update invoice.'});}
+});
+// Database backup is made through SQLite's online backup API so WAL data is included safely.
+app.get('/api/admin/database/download',requireAdmin,async(req,res)=>{
+ const backupPath=path.join(os.tmpdir(),`invoice-backup-${Date.now()}-${crypto.randomBytes(5).toString('hex')}.sqlite`);
+ try{await db.backup(backupPath);res.setHeader('Cache-Control','no-store');res.download(backupPath,`invoice-database-${new Date().toISOString().slice(0,10)}.sqlite`,err=>{fs.promises.unlink(backupPath).catch(()=>{});if(err&&!res.headersSent)res.status(500).end('Database download failed.');});}catch(e){fs.promises.unlink(backupPath).catch(()=>{});console.error('Database backup failed:',e.message);res.status(500).json({error:'Could not create database backup.'});}
+});
+const uploadCodes=new Map(),uploadGrants=new Map(),uploadCooldowns=new Map();
+const databaseUpload=multer({storage:multer.memoryStorage(),limits:{fileSize:50*1024*1024,files:1}});
+app.post('/api/admin/database/request-code',requireAdmin,async(req,res)=>{
+ const user=req.sessionUser,now=Date.now(),last=uploadCooldowns.get(user.id)||0;if(now-last<60000)return res.status(429).json({error:`Please wait ${Math.ceil((60000-(now-last))/1000)} seconds before requesting another code.`});
+ const channelId=process.env.ADMIN_SECURITY_CHANNEL_ID||process.env.INVOICE_LOG_CHANNEL_ID||process.env.INVOICE_NOTIFICATION_CHANNEL_ID;if(!channelId)return res.status(503).json({error:'Set ADMIN_SECURITY_CHANNEL_ID (recommended) or INVOICE_LOG_CHANNEL_ID in Render first.'});if(!bot)return res.status(503).json({error:'Discord bot is not connected yet. Try again shortly.'});
+ try{const channel=await bot.channels.fetch(channelId);if(!channel?.isTextBased()||!channel.send)return res.status(400).json({error:'Configured verification channel is not a text channel the bot can send to.'});
+  const code=String(crypto.randomInt(0,1000000)).padStart(6,'0');uploadCodes.set(user.id,{hash:crypto.createHash('sha256').update(`${user.id}:${code}:${SESSION_SECRET}`).digest('hex'),expires:now+10*60*1000,attempts:0});uploadGrants.delete(user.id);uploadCooldowns.set(user.id,now);
+  await channel.send({embeds:[new EmbedBuilder().setColor(0xf0b64b).setTitle('🔐 Database upload verification').setDescription(`Admin: <@${user.id}> (\`${user.id}\`)
+A database upload verification code was requested.
+
+**Verification code: \`${code}\`**
+Expires in **10 minutes**. Do not share this code.`).setFooter({text:'Invoice Studio security • only use this code in the Admin Dashboard'}).setTimestamp()],allowedMentions:{users:[String(user.id)],parse:[]}});
+  res.json({ok:true,message:'Verification code sent to the configured Discord channel. It expires in 10 minutes.'});
+ }catch(e){uploadCodes.delete(user.id);console.error('Database verification code send failed:',e.message);res.status(502).json({error:'Could not send the verification code. Check bot permissions and channel ID.'});}
+});
+app.post('/api/admin/database/verify-code',requireAdmin,(req,res)=>{
+ const user=req.sessionUser,entry=uploadCodes.get(user.id),code=String(req.body?.code||'').trim();if(!entry||entry.expires<Date.now()){uploadCodes.delete(user.id);return res.status(400).json({error:'Code expired or not requested. Request a new code.'});}
+ if(!/^\d{6}$/.test(code))return res.status(400).json({error:'Enter the 6-digit code.'});
+ const digest=crypto.createHash('sha256').update(`${user.id}:${code}:${SESSION_SECRET}`).digest('hex');if(!safeEqual(entry.hash,digest)){entry.attempts++;if(entry.attempts>=5)uploadCodes.delete(user.id);return res.status(400).json({error:entry.attempts>=5?'Too many incorrect attempts. Request a new code.':'Incorrect code. Please try again.'});}
+ uploadCodes.delete(user.id);uploadGrants.set(user.id,Date.now()+10*60*1000);res.json({ok:true,message:'Verified. You can upload a database backup for the next 10 minutes.'});
+});
+app.post('/api/admin/database/upload',requireAdmin,(req,res,next)=>{const until=uploadGrants.get(req.sessionUser.id)||0;if(until<Date.now()){uploadGrants.delete(req.sessionUser.id);return res.status(403).json({error:'Verify a fresh 6-digit Discord code before uploading.'});}next();},databaseUpload.single('database'),(req,res)=>{
+ const user=req.sessionUser;if(!req.file)return res.status(400).json({error:'Choose a SQLite database backup file first.'});const temp=path.join(os.tmpdir(),`invoice-import-${Date.now()}-${crypto.randomBytes(5).toString('hex')}.sqlite`);let source;
+ try{fs.writeFileSync(temp,req.file.buffer,{flag:'wx'});source=new Database(temp,{readonly:true,fileMustExist:true});const check=source.pragma('quick_check');if(!check?.length||check[0].quick_check!=='ok')throw new Error('SQLite integrity check failed.');const table=source.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='invoices'").get();if(!table)throw new Error('This file is not an Invoice Studio database (invoices table missing).');const cols=source.prepare('PRAGMA table_info(invoices)').all().map(x=>x.name);if(!['invoice_id','buyer_name','payload','created_at','updated_at'].every(x=>cols.includes(x)))throw new Error('Database invoices table has an incompatible schema.');
+  const sourceInvoices=source.prepare('SELECT invoice_id,buyer_name,payload,created_at,updated_at FROM invoices').all();for(const row of sourceInvoices){let parsed;try{parsed=JSON.parse(row.payload)}catch{throw new Error(`Invoice ${row.invoice_id} contains invalid JSON payload.`)}if(!parsed||typeof parsed!=='object'||Array.isArray(parsed)||!String(row.invoice_id||'').trim()||!String(row.buyer_name||'').trim())throw new Error(`Invoice ${row.invoice_id||'(unknown)'} has invalid required fields.`);}const sourceHasActivity=Boolean(source.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='invoice_activity'").get());const sourceActivity=sourceHasActivity?source.prepare('SELECT invoice_id,action,created_at,creator_id,creator_username,payload FROM invoice_activity').all():[];
+  const insertInvoice=db.prepare(`INSERT INTO invoices(invoice_id,buyer_name,payload,created_at,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(invoice_id) DO UPDATE SET buyer_name=excluded.buyer_name,payload=excluded.payload,updated_at=excluded.updated_at`);const hasActivity=db.prepare('SELECT 1 FROM invoice_activity WHERE invoice_id=? AND action=? AND created_at=? AND payload=? LIMIT 1');const insertActivity=db.prepare('INSERT INTO invoice_activity(invoice_id,action,created_at,creator_id,creator_username,payload) VALUES(?,?,?,?,?,?)');
+  const merge=db.transaction(()=>{for(const row of sourceInvoices)insertInvoice.run(row.invoice_id,row.buyer_name,row.payload,row.created_at,row.updated_at);for(const row of sourceActivity){if(!hasActivity.get(row.invoice_id,row.action,row.created_at,row.payload))insertActivity.run(row.invoice_id,row.action,row.created_at,row.creator_id,row.creator_username,row.payload);}});merge();uploadGrants.delete(user.id);
+  const stamp=new Date().toISOString();db.prepare('INSERT INTO invoice_activity(invoice_id,action,created_at,creator_id,creator_username,payload) VALUES(?,?,?,?,?,?)').run('DATABASE-IMPORT','database imported',stamp,user.id,user.username,JSON.stringify({invoiceCount:sourceInvoices.length,activityCount:sourceActivity.length,importedBy:{id:user.id,username:user.username},savedAt:stamp}));
+  res.json({ok:true,message:`Database merged successfully: ${sourceInvoices.length} invoice records and ${sourceActivity.length} activity records imported. Existing invoices with matching IDs were updated. Tickets and bot settings were not overwritten.`});
+ }catch(e){console.warn('Database upload rejected:',e.message);res.status(400).json({error:e.message||'Could not import database.'});}finally{try{source?.close()}catch{}fs.promises.unlink(temp).catch(()=>{});}
 });
 function makeInvoicePdf(payload){
  return new Promise((resolve,reject)=>{try{
@@ -175,16 +229,17 @@ async function notifyInvoiceDiscord(payload, action, user, renderedImageDataUrl)
   const channel=await bot.channels.fetch(channelId);if(!channel?.isTextBased()||!channel.send)return;
   const renderedImage=decodeRenderedInvoiceImage(renderedImageDataUrl);
   const pdf=renderedImage?await makePdfFromRenderedImage(renderedImage,payload):await makeInvoicePdf(payload);const seller=String(payload.sellerName||payload.shopName||payload.brandName||'Seller not provided');
-  const creatorMention=user?.id?`<@${user.id}>`:String(user?.username||'Website user (not logged in)');
+  const sellerId=String(payload.sellerDiscordId||payload.creatorDiscordId||user?.id||'').trim();const buyerId=String(payload.discordUserId||payload.buyerDiscordId||'').trim();
+  const sellerMention=/^\d{17,20}$/.test(sellerId)?`<@${sellerId}>`:String(user?.username||'Website user (not logged in)');const buyerMention=/^\d{17,20}$/.test(buyerId)?`<@${buyerId}>`:short(payload.buyerName||'—',150);
   const products=(payload.products||[]).map(p=>`• **${short(p.name||'Item',100)}** × ${Number(p.qty)||1} — ₹${((Number(p.qty)||0)*(Number(p.price)||0)).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2})}`).join('\n')||'• No line items';
   const total=payload.payable??payload.total??payload.grandTotal??payload.totalAmount??'—';
   const totalText=(typeof total==='number'||(String(total).trim()!==''&&!Number.isNaN(Number(total))))?'₹'+Number(total).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2}):short(total,60);
   const card=new ContainerBuilder().setAccentColor(action==='updated'?0xf0b64b:0x6d7cff);
   card.addTextDisplayComponents(new TextDisplayBuilder().setContent(`## 🧾 Invoice ${action==='updated'?'Updated':'Created'}
 **Invoice ID**  \`${short(payload.invoiceId,90)}\`
-**Seller / Creator:** ${creatorMention}
+**Seller / Creator:** ${sellerMention}${sellerId&&/^\d{17,20}$/.test(sellerId)?` (ID: \`${sellerId}\`)`:''}
 **Shop:** ${short(seller,150)}
-**Buyer:** ${short(payload.buyerName,150)}
+**Buyer:** ${buyerMention}${buyerId&&/^\d{17,20}$/.test(buyerId)?` (ID: \`${buyerId}\`)`:''}
 **Date:** ${short(payload.date||payload.dateTime||payload.savedAt||new Date().toISOString(),100)}`));
   card.addSeparatorComponents(new SeparatorBuilder());
   card.addTextDisplayComponents(new TextDisplayBuilder().setContent(`### Items
@@ -203,7 +258,7 @@ ${short(products,1800)}
    card.addMediaGalleryComponents(new MediaGalleryBuilder().addItems(new MediaGalleryItemBuilder().setURL('attachment://invoice-preview.png').setDescription(`Invoice ${payload.invoiceId||''} — exact generator design`)));
   }
   files.push(new AttachmentBuilder(pdf,{name:`${safeInvoiceName}.pdf`,description:`PDF invoice ${payload.invoiceId||''} matching the generator design`}));
-  await channel.send({flags:MessageFlags.IsComponentsV2,components,files,allowedMentions:{parse:[],users:user?.id?[String(user.id)]:[]}});
+  const mentionUsers=[sellerId,buyerId,user?.id].filter(id=>/^\d{17,20}$/.test(String(id||''))).map(String);await channel.send({flags:MessageFlags.IsComponentsV2,components,files,allowedMentions:{parse:[],users:[...new Set(mentionUsers)]}});
  }catch(e){console.warn('Invoice Discord notification failed:',e.message);}
 }
 

@@ -126,3 +126,11 @@ Install/download games through the official Steam client using an account that o
 - Invoice IDs use `INV-YYYYMMDD-XXXXX` (date plus a random uppercase alphanumeric code) for newly generated invoices. Existing stored invoice IDs are not rewritten.
 - Invoice-created/updated Discord logs are sent as a Discord Components V2 card with a verified creator/seller mention when the creator is logged in, plus a professionally laid-out PDF attachment.
 - The Discord PDF uses the bundled DejaVu Sans fonts for currency and Unicode support. PDF notifications omit private account email/password fields. Keep the admin page and its full-payload exports private because those records may contain sensitive product account information.
+
+
+## Admin dashboard V3: profile, audit history and protected database transfer
+- The admin dashboard has Invoice History, Login History, Database & Security, and Admin Profile tabs. Invoice records can be inspected as formatted JSON or edited through the complete payload editor; edits create an `admin edited` audit record. CSV/JSON exports are available.
+- Successful Discord OAuth logins are recorded in `admin_login_history` with Discord ID, username, avatar hash, and timestamp. The dashboard displays profile details and last-login information. This history begins after this version is deployed.
+- `ADMIN_SECURITY_CHANNEL_ID` is the recommended private Discord text channel for 6-digit database upload verification codes. If unset, the app falls back to `INVOICE_LOG_CHANNEL_ID` or `INVOICE_NOTIFICATION_CHANNEL_ID`. Give the bot View Channel, Send Messages, and Embed Links permissions; restrict channel access to trusted admins.
+- Database upload requires an authenticated admin and a 6-digit code delivered in Discord. Codes expire after 10 minutes, have a 60-second resend cooldown, and allow up to five attempts. Uploads are SQLite-integrity-checked and merged into the live invoice database; matching invoice IDs are updated. Other tables such as tickets and bot settings are intentionally not overwritten. Download a fresh backup before importing.
+- Invoice log cards mention the seller/creator and buyer when their valid Discord IDs are present in the invoice payload.
