@@ -41,6 +41,7 @@ CREATE INDEX IF NOT EXISTS idx_tickets_channel ON tickets(channel_id);
 CREATE TABLE IF NOT EXISTS game_prices (app_id TEXT PRIMARY KEY, game_name TEXT NOT NULL, our_price REAL NOT NULL, updated_by TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS bot_settings (setting_key TEXT PRIMARY KEY, setting_value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS invoice_replacements (new_invoice_id TEXT PRIMARY KEY COLLATE NOCASE, original_invoice_id TEXT NOT NULL COLLATE NOCASE, ticket_id INTEGER, created_by TEXT NOT NULL, template_name TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS invoice_activity (id INTEGER PRIMARY KEY AUTOINCREMENT, invoice_id TEXT NOT NULL, action TEXT NOT NULL, created_at TEXT NOT NULL, creator_id TEXT, creator_username TEXT, payload TEXT NOT NULL);
 `);
 try { db.exec('ALTER TABLE tickets ADD COLUMN product_index INTEGER NOT NULL DEFAULT 0'); } catch (e) { if (!String(e.message).includes('duplicate column name')) throw e; }
 try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_invoice_replacements_one_use ON invoice_replacements(original_invoice_id COLLATE NOCASE)'); } catch (e) { console.warn('Could not add replacement one-use index (legacy duplicate replacement records may exist); runtime checks remain enabled:', e.message); }
@@ -69,13 +70,97 @@ function saveInvoice(body) {
     .run(invoiceId,buyerName,JSON.stringify(payload),now,now);
   return payload;
 }
+// Backfill existing saved invoices into the audit log so the admin dashboard also shows older records.
+try {
+ const oldInvoices=db.prepare('SELECT invoice_id,payload,created_at FROM invoices').all();
+ const hasActivity=db.prepare('SELECT 1 FROM invoice_activity WHERE invoice_id=? LIMIT 1');
+ const addActivity=db.prepare('INSERT INTO invoice_activity(invoice_id,action,created_at,creator_id,creator_username,payload) VALUES(?,?,?,?,?,?)');
+ for(const row of oldInvoices){if(!hasActivity.get(row.invoice_id)){let payload={};try{payload=JSON.parse(row.payload)}catch{};addActivity.run(row.invoice_id,'existing record',row.created_at||new Date().toISOString(),payload.createdBy?.id||null,payload.createdBy?.username||'Previously saved invoice',row.payload);}}
+} catch(e){console.warn('Invoice activity backfill skipped:',e.message);}
 // One-time compatibility migration: import records from the previous invoices.json build.
 for (const legacyFile of [path.join(__dirname, 'invoices.json'), path.join(__dirname, 'data', 'invoices.json'), path.join(DATA_DIR, 'invoices.json')]) {
   try { if (fs.existsSync(legacyFile)) { const legacy = JSON.parse(fs.readFileSync(legacyFile, 'utf8')); if (Array.isArray(legacy)) for (const item of legacy) { if (item && item.invoiceId && item.buyerName && !getInvoice(item.invoiceId)) saveInvoice(item); } console.log(`Imported legacy invoice records from ${legacyFile}`); } } catch (e) { console.warn(`Could not import ${legacyFile}: ${e.message}`); }
 }
+
+// Discord OAuth login + signed, HTTP-only session cookie.
+const OAUTH_CLIENT_ID = process.env.DISCORD_OAUTH_CLIENT_ID || process.env.CLIENT_ID || '';
+const OAUTH_CLIENT_SECRET = process.env.DISCORD_OAUTH_CLIENT_SECRET || '';
+const OAUTH_REDIRECT_URI = process.env.DISCORD_OAUTH_REDIRECT_URI || '';
+const SESSION_SECRET = process.env.SESSION_SECRET || process.env.DISCORD_OAUTH_CLIENT_SECRET || process.env.DISCORD_TOKEN || 'change-this-session-secret';
+const ADMIN_DISCORD_IDS = new Set(String(process.env.ADMIN_DISCORD_IDS || '').split(',').map(x=>x.trim()).filter(Boolean));
+function signValue(value){const data=Buffer.from(JSON.stringify(value)).toString('base64url');const sig=crypto.createHmac('sha256',SESSION_SECRET).update(data).digest('base64url');return `${data}.${sig}`;}
+function readSigned(value){try{const [data,sig]=String(value||'').split('.');if(!data||!sig)return null;const expected=crypto.createHmac('sha256',SESSION_SECRET).update(data).digest('base64url');if(!safeEqual(sig,expected))return null;const obj=JSON.parse(Buffer.from(data,'base64url').toString());if(obj.exp && obj.exp<Date.now())return null;return obj;}catch{return null;}}
+function cookieValue(req,name){const raw=String(req.headers.cookie||'');const m=raw.split(';').map(x=>x.trim()).find(x=>x.startsWith(name+'='));return m?decodeURIComponent(m.slice(name.length+1)):'';}
+function sessionUser(req){const value=readSigned(cookieValue(req,'invoice_session'));return value?.user||null;}
+function isAdminUser(user){return Boolean(user?.id && ADMIN_DISCORD_IDS.has(String(user.id)));}
+function requireAdmin(req,res,next){const user=sessionUser(req);if(!user)return res.status(401).json({error:'Login with Discord first.'});if(!isAdminUser(user))return res.status(403).json({error:'Administrator access required.'});req.sessionUser=user;next();}
+function escapeHtml(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+app.get('/auth/discord',(req,res)=>{
+ if(!OAUTH_CLIENT_ID||!OAUTH_REDIRECT_URI)return res.status(503).send('Discord OAuth is not configured. Set DISCORD_OAUTH_CLIENT_ID, DISCORD_OAUTH_CLIENT_SECRET and DISCORD_OAUTH_REDIRECT_URI in Render.');
+ const state=crypto.randomBytes(24).toString('hex');
+ res.setHeader('Set-Cookie',`invoice_oauth_state=${signValue({state,exp:Date.now()+10*60*1000})}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=600`);
+ const url=new URL('https://discord.com/oauth2/authorize');url.searchParams.set('client_id',OAUTH_CLIENT_ID);url.searchParams.set('redirect_uri',OAUTH_REDIRECT_URI);url.searchParams.set('response_type','code');url.searchParams.set('scope','identify');url.searchParams.set('state',state);
+ res.redirect(url.toString());
+});
+app.get('/auth/discord/callback',async(req,res)=>{
+ try{
+  const saved=readSigned(cookieValue(req,'invoice_oauth_state'));res.setHeader('Set-Cookie','invoice_oauth_state=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0');
+  if(!saved||!req.query.state||!safeEqual(saved.state,req.query.state))return res.status(400).send('Invalid or expired Discord login state. Please try again.');
+  if(!req.query.code)return res.status(400).send('Discord login was cancelled.');
+  const tokenResponse=await fetch('https://discord.com/api/oauth2/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({client_id:OAUTH_CLIENT_ID,client_secret:OAUTH_CLIENT_SECRET,grant_type:'authorization_code',code:String(req.query.code),redirect_uri:OAUTH_REDIRECT_URI})});
+  const token=await tokenResponse.json();if(!tokenResponse.ok||!token.access_token)throw new Error(token.error_description||'Discord token exchange failed');
+  const userResponse=await fetch('https://discord.com/api/users/@me',{headers:{Authorization:`Bearer ${token.access_token}`}});
+  const user=await userResponse.json();if(!userResponse.ok||!user.id)throw new Error('Could not retrieve Discord profile.');
+  const session=signValue({user:{id:user.id,username:user.global_name||user.username,discriminator:user.discriminator||'0',avatar:user.avatar||null},exp:Date.now()+7*24*60*60*1000});
+  res.setHeader('Set-Cookie',`invoice_session=${session}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=604800`);
+  res.redirect('/');
+ }catch(e){console.error('Discord OAuth failed:',e.message);res.status(502).send('Discord login failed. Check OAuth configuration and redirect URL in Render.');}
+});
+app.get('/auth/me',(req,res)=>{const user=sessionUser(req);res.json({loggedIn:Boolean(user),user:user?{...user,isAdmin:isAdminUser(user)}:null});});
+app.get('/logout',(req,res)=>{res.setHeader('Set-Cookie','invoice_session=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0');res.redirect('/');});
+app.get('/admin',(req,res)=>{
+ const user=sessionUser(req);if(!user)return res.redirect('/auth/discord');
+ if(!isAdminUser(user))return res.status(403).send('<h1>403 — Admin access required</h1><p>Your Discord account is not in ADMIN_DISCORD_IDS.</p><a href="/">Back to Invoice Studio</a>');
+ res.type('html').send(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Invoice Admin</title><style>body{font:14px system-ui;background:#f3f4f6;color:#171717;margin:0;padding:24px}header{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}h1{margin:0}.muted{color:#666}.card{background:#fff;border:1px solid #ddd;border-radius:12px;padding:16px;margin:18px 0;overflow:auto}input,button{padding:10px;border:1px solid #ccc;border-radius:8px}table{border-collapse:collapse;width:100%;min-width:850px}th,td{text-align:left;border-bottom:1px solid #e5e5e5;padding:10px;vertical-align:top}th{background:#111;color:#fff}pre{white-space:pre-wrap;max-width:500px}a{color:#174ea6}</style></head><body><header><div><h1>Invoice Admin</h1><div class="muted">Logged in as ${escapeHtml(user.username)} · Discord ID ${escapeHtml(user.id)}</div></div><nav><a href="/">Invoice Studio</a> · <a href="/logout">Logout</a></nav></header><div class="card"><input id="q" placeholder="Search invoice ID, creator, buyer..." style="width:min(480px,90%)"><button onclick="load()">Search / Refresh</button><span id="status" class="muted"></span></div><div class="card"><table><thead><tr><th>Date</th><th>Invoice ID</th><th>Action</th><th>Creator</th><th>Buyer</th><th>Items</th><th>Total</th><th>Full record</th></tr></thead><tbody id="rows"></tbody></table></div><script>async function load(){const q=document.getElementById('q').value;const r=await fetch('/api/admin/invoices?q='+encodeURIComponent(q));const d=await r.json();if(!r.ok){document.getElementById('status').textContent=d.error||'Failed';return}document.getElementById('status').textContent=' '+d.items.length+' activity records';document.getElementById('rows').innerHTML=d.items.map(x=>'<tr><td>'+esc(x.created_at)+'</td><td>'+esc(x.invoice_id)+'</td><td>'+esc(x.action)+'</td><td>'+esc((x.creator_username||'Unknown')+' ('+(x.creator_id||'—')+')')+'</td><td>'+esc(x.payload.buyerName||'—')+'</td><td>'+esc((x.payload.products||[]).map(p=>(p.name||'Item')+' × '+(p.qty||1)+' @ '+(p.price||0)).join('\\\\n'))+'</td><td>'+esc(x.payload.total||x.payload.grandTotal||x.payload.totalAmount||'—')+'</td><td><details><summary>View details</summary><pre>'+esc(JSON.stringify(x.payload,null,2))+'</pre></details></td></tr>').join('')}function esc(v){return String(v??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}load();</script></body></html>`);
+});
+app.get('/api/admin/invoices',requireAdmin,(req,res)=>{
+ const q=String(req.query.q||'').slice(0,150);
+ const rows=q?db.prepare(`SELECT * FROM invoice_activity WHERE invoice_id LIKE ? OR creator_username LIKE ? OR creator_id LIKE ? OR payload LIKE ? ORDER BY id DESC LIMIT 500`).all(`%${q}%`,`%${q}%`,`%${q}%`,`%${q}%`):db.prepare('SELECT * FROM invoice_activity ORDER BY id DESC LIMIT 500').all();
+ res.json({items:rows.map(r=>({...r,payload:(()=>{try{return JSON.parse(r.payload)}catch{return {}}})()}))});
+});
+function makeInvoicePdf(payload){
+ return new Promise((resolve,reject)=>{try{const doc=new PDFDocument({size:'A4',margin:42});const chunks=[];doc.on('data',c=>chunks.push(c));doc.on('end',()=>resolve(Buffer.concat(chunks)));doc.on('error',reject);
+ doc.fontSize(22).font('Helvetica-Bold').text(String(payload.brandName||payload.sellerName||'INVOICE'),{align:'left'});doc.moveDown(.3);doc.fontSize(10).font('Helvetica').text(`Invoice: ${payload.invoiceId||'—'}     Date: ${payload.dateTime||payload.savedAt||new Date().toISOString()}`);doc.moveDown();doc.fontSize(12).font('Helvetica-Bold').text('INVOICE TO');doc.fontSize(10).font('Helvetica').text(String(payload.buyerName||'—'));if(payload.contact)doc.text(String(payload.contact));doc.moveDown();doc.fontSize(12).font('Helvetica-Bold').text('ITEMS');doc.moveDown(.3);for(const p of (payload.products||[])){doc.font('Helvetica-Bold').text(String(p.name||'Product'));doc.font('Helvetica').text(`Qty: ${p.qty||1}    Price: ${p.price||0}    Line total: ${((Number(p.qty)||0)*(Number(p.price)||0)).toFixed(2)}`);doc.moveDown(.3);}doc.moveDown();doc.font('Helvetica-Bold').fontSize(14).text(`TOTAL: ${payload.total||payload.grandTotal||payload.totalAmount||'—'}`);doc.fontSize(9).font('Helvetica').text(`Payment method: ${payload.paymentMethod||'—'}`);doc.end();}catch(e){reject(e);}});
+}
+async function notifyInvoiceDiscord(payload, action, user){
+ const channelId=process.env.INVOICE_LOG_CHANNEL_ID||process.env.INVOICE_NOTIFICATION_CHANNEL_ID;if(!channelId||!bot)return;
+ try{
+  const channel=await bot.channels.fetch(channelId);if(!channel?.isTextBased())return;
+  const pdf=await makeInvoicePdf(payload);
+  const creator=user?`${user.username} (Discord ID ${user.id})`:'Website user (not logged in)';
+  const body=[
+   `🧾 **Invoice ${action}**`,
+   `**Invoice ID:** ${short(payload.invoiceId,100)}`,
+   `**Buyer:** ${short(payload.buyerName,150)}`,
+   `**Creator:** ${short(creator,180)}`,
+   `**Date:** ${short(payload.dateTime||payload.savedAt||new Date().toISOString(),100)}`,
+   `**Items:** ${short((payload.products||[]).map(p=>`${p.name} × ${p.qty} @ ${p.price}`).join(', '),900)}`,
+   `**Total:** ${short(payload.total||payload.grandTotal||payload.totalAmount||'—',100)}`,
+   `**Payment:** ${short(payload.paymentMethod||'—',80)}`
+  ].join('\n');
+  await channel.send({content:body,files:[new AttachmentBuilder(pdf,{name:`${String(payload.invoiceId||'invoice').replace(/[^a-z0-9_-]/gi,'_')}.pdf`})],allowedMentions:{parse:[]}});
+ }catch(e){console.warn('Invoice Discord notification failed:',e.message);}
+}
+
 app.get('/health',(_req,res)=>res.status(200).json({ok:true,service:'invoice-bot',database:'sqlite'}));
 app.get('/api/invoices/:id',apiAuth,(req,res)=>{const found=getInvoice(req.params.id);if(!found)return res.status(404).json({error:'Invoice not found.'});const safe={...found,products:(found.products||[]).map(({accountEmail,accountPassword,...p})=>p)};res.json(safe);});
-app.post('/api/invoices',apiAuth,(req,res)=>{try{const record=saveInvoice(req.body||{});res.status(201).json({ok:true,invoiceId:record.invoiceId,savedAt:record.savedAt});}catch(e){res.status(400).json({error:e.message||'Could not save invoice.'});}});
+app.post('/api/invoices',apiAuth,async(req,res)=>{try{
+ const body=req.body||{};const user=sessionUser(req);const prior=getInvoice(body.invoiceId);const record=saveInvoice({...body,createdBy:user?{id:user.id,username:user.username}:body.createdBy});
+ const action=prior?'updated':'created';const stamp=new Date().toISOString();
+ db.prepare('INSERT INTO invoice_activity(invoice_id,action,created_at,creator_id,creator_username,payload) VALUES(?,?,?,?,?,?)').run(record.invoiceId,action,stamp,user?.id||record.createdBy?.id||null,user?.username||record.createdBy?.username||'Website user',JSON.stringify(record));
+ notifyInvoiceDiscord(record,action,user||record.createdBy).catch(()=>{});
+ res.status(201).json({ok:true,invoiceId:record.invoiceId,savedAt:record.savedAt,action});
+ }catch(e){res.status(400).json({error:e.message||'Could not save invoice.'});}});
 // Sensitive product credentials are not returned by the public invoice API and are never rendered into invoice exports.
 
 let bot;

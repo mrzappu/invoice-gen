@@ -10,10 +10,6 @@ Node.js/Express website and Discord bot. Invoice records and private product cre
 - Ticket controls in a Discord Components V2 container: Claim, Close, Reopen, Account Details, Add user, Remove user.
 - Private credentials are revealed ephemerally only to the ticket claimant or server owner.
 - `/resize`: resize an attached image to 3840×2160 PNG using Contain or Cover.
-- `/gen app_id:<ID> [manifest_file] [lua_file]`: admin/staff command that looks up Steam Store metadata and returns a ZIP download. Optional manifest/Lua attachments are copied into the ZIP as supplied by the command user; the bot does not fetch or generate those files. Only use files you are authorized to redistribute.
-- Private `/game game_name:<title>` command: search a Steam game and show a private Components V2 result (game image, game name, Steam India price, Our Price, and Game ID only). Discord displays “Only you can see this · Dismiss message”.
-- `/game-price game_name:<title> our_price:<INR>` lets staff set/update the shop price. Re-run it to edit; use `0` to remove the listed price. If no shop price is set, the response shows “Our Price: Not listed”. The game result is a plain Components V2 card with only the game image, name, Steam price, our price, and Steam Game ID; it has no buttons or coloured embed.
-- A styled normal-text sticky instruction message is automatically maintained in the configured game-price channel. Members use `/game` for private results; ordinary typed messages do not trigger public game lookups. Set `GAME_PRICE_CHANNEL_ID` to override the default channel ID.
 
 ## Local setup
 1. Install Node.js 22.22.0.
@@ -114,3 +110,11 @@ Staff/server owners can publish a public game card with `/post`. Provide exactly
 Use `/gen app_id:<Steam App ID>` to create a private downloadable ZIP for a game listed on the Steam Store. The command is restricted to the server owner, administrators, members with Manage Channels, or the configured `STAFF_ROLE_ID`. The ZIP includes `game-metadata.json` and `README.txt` with a Gojo's Steam Lounge copyright/license notice. It contains metadata only—no game content, Steam manifests, Lua files, or ownership bypass. The command uses Steam's public Store app-details endpoint.
 
 Install/download games through the official Steam client using an account that owns the game.
+
+## Discord login and invoice admin audit
+- `GET /auth/discord` starts Discord OAuth login; `GET /auth/discord/callback` completes it. Set `DISCORD_OAUTH_CLIENT_ID`, `DISCORD_OAUTH_CLIENT_SECRET`, and `DISCORD_OAUTH_REDIRECT_URI` in Render. Register the redirect URI exactly in the Discord Developer Portal (for this service it will normally be `https://invoice-gen-1-it3l.onrender.com/auth/discord/callback`).
+- `SESSION_SECRET` should be a long random secret (32+ characters). The session cookie is signed, HttpOnly, Secure, and SameSite=Lax.
+- `ADMIN_DISCORD_IDS` is a comma-separated list of Discord user IDs allowed to view `/admin` and `/api/admin/invoices`.
+- `INVOICE_LOG_CHANNEL_ID` is the Discord text channel ID where invoice creation/update reports and a PDF attachment are sent. `INVOICE_NOTIFICATION_CHANNEL_ID` is accepted as an alternate name. Give the bot View Channel, Send Messages, and Attach Files permissions there.
+- The invoice website remains usable without logging in; invoice records made without OAuth show `Website user` rather than a verified Discord identity. To attribute invoices to a real Discord account, use Login with Discord before creating/saving them.
+- `/admin` lists invoice activity with creator, buyer, date, products, totals, and the stored record. Only IDs in `ADMIN_DISCORD_IDS` can access it. Private account credentials are stored in the database payload; restrict database and admin access accordingly.
