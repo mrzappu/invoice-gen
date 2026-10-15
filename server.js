@@ -465,18 +465,41 @@ async function startBot(){
      await interaction.deferReply();try{const file=interaction.options.getAttachment('image');if(!file.contentType?.startsWith('image/'))return interaction.editReply('Please attach a valid image.');if(file.size>15*1024*1024)return interaction.editReply('Image must be 15 MB or smaller.');const response=await fetch(file.url);if(!response.ok)throw new Error('Could not download image');const input=Buffer.from(await response.arrayBuffer());const fit=interaction.options.getString('fit')||'contain';const png=await sharp(input,{failOn:'none'}).rotate().resize(3840,2160,{fit:fit==='cover'?'cover':'contain',background:{r:15,g:18,b:32,alpha:1}}).png({compressionLevel:8}).toBuffer();await interaction.editReply({content:`Done — **3840 × 2160 px** PNG. Fit: **${fit}**.`,files:[new AttachmentBuilder(png,{name:'resized-3840x2160.png'})]});}catch(e){console.error('Resize failed',e);await interaction.editReply('Could not resize this image. Use JPG, PNG or WebP under 15 MB.');}
     }
     if(interaction.commandName==='qr'){
-     // Restrict command execution to configured admins, the guild owner, or Discord administrators.
-     // The generated QR response itself is public so every member in the channel can see it.
+     // Only configured admins, the guild owner, or Discord administrators may run this command.
+     // Reply publicly with a Components V2 card. Do not defer with IsComponentsV2:
+     // Discord can reject the deferred response flags, leaving the command stuck on "thinking".
      const configuredAdmin=ADMIN_DISCORD_IDS.has(String(interaction.user.id));
      const guildOwner=Boolean(interaction.guild && interaction.guild.ownerId===interaction.user.id);
      const discordAdministrator=Boolean(interaction.memberPermissions?.has(PermissionFlagsBits.Administrator));
      if(!configuredAdmin&&!guildOwner&&!discordAdministrator){
-      return respondInteraction(interaction,{content:'Administrator access is required to use /qr.',ephemeral:true});
+      return interaction.reply({content:'Administrator access is required to use /qr.',flags:MessageFlags.Ephemeral});
      }
-     await interaction.deferReply({flags:MessageFlags.IsComponentsV2});
-     try{const type=interaction.options.getString('payment_type',true),address=interaction.options.getString('address',true).trim(),item=interaction.options.getString('item',true).trim(),amount=interaction.options.getNumber('amount');let payload;
-      if(type==='upi'){if(!/^[A-Za-z0-9._-]{2,100}@[A-Za-z0-9.-]{2,60}$/.test(address))return interaction.editReply({components:[new ContainerBuilder().addTextDisplayComponents(new TextDisplayBuilder().setContent('## Invalid UPI ID\nEnter a valid UPI ID, for example `name@bank`.'))]});if(amount!==null&&amount<0.01)return interaction.editReply({components:[new ContainerBuilder().addTextDisplayComponents(new TextDisplayBuilder().setContent('## Invalid amount\nUPI amounts must be at least ₹0.01.'))]});const params=new URLSearchParams({pa:address,pn:'Invoice Studio',tn:item,cu:'INR'});if(amount!==null)params.set('am',Number(amount).toFixed(2));payload='upi://pay?'+params.toString();}
-      else{if(!/^(?:[LM3][a-km-zA-HJ-NP-Z1-9]{25,60}|ltc1[a-z0-9]{20,70})$/i.test(address))return interaction.editReply({components:[new ContainerBuilder().addTextDisplayComponents(new TextDisplayBuilder().setContent('## Invalid Litecoin address\nCheck the LTC address and try again.'))]});const params=new URLSearchParams({message:item});if(amount!==null)params.set('amount',String(amount));payload='litecoin:'+address+(params.size?'?'+params.toString():'');}
+     try{
+      const type=interaction.options.getString('payment_type',true);
+      const address=interaction.options.getString('address',true).trim();
+      const item=interaction.options.getString('item',true).trim();
+      const amount=interaction.options.getNumber('amount');
+      let payload;
+      if(type==='upi'){
+       if(!/^[A-Za-z0-9._-]{2,100}@[A-Za-z0-9.-]{2,60}$/.test(address)){
+        return interaction.reply({content:'Invalid UPI ID. Enter a valid UPI ID, for example `name@bank`.',flags:MessageFlags.Ephemeral});
+       }
+       if(amount!==null&&amount<0.01){
+        return interaction.reply({content:'UPI amounts must be at least ₹0.01.',flags:MessageFlags.Ephemeral});
+       }
+       const params=new URLSearchParams({pa:address,pn:'Invoice Studio',tn:item,cu:'INR'});
+       if(amount!==null)params.set('am',Number(amount).toFixed(2));
+       payload='upi://pay?'+params.toString();
+      }else{
+       if(!/^(?:[LM3][a-km-zA-HJ-NP-Z1-9]{25,60}|ltc1[a-z0-9]{20,70})$/i.test(address)){
+        return interaction.reply({content:'Invalid Litecoin address. Check the LTC address and try again.',flags:MessageFlags.Ephemeral});
+       }
+       const params=new URLSearchParams({message:item});
+       if(amount!==null)params.set('amount',String(amount));
+       payload='litecoin:'+address+(params.size?'?'+params.toString():'');
+      }
+      // QR generation is local and fast, so build the payload first and send one initial response.
+      // This avoids a deferred interaction failing on the Components V2 flag.
       const png=await require('qrcode').toBuffer(payload,{type:'png',width:900,margin:2,errorCorrectionLevel:'H'});
       const amountText=amount===null?'Not specified':(type==='upi'?'₹':'Ł')+Number(amount).toLocaleString('en-US',{maximumFractionDigits:8});
       const card=new ContainerBuilder();
@@ -484,8 +507,13 @@ async function startBot(){
       card.addMediaGalleryComponents(new MediaGalleryBuilder().addItems(new MediaGalleryItemBuilder().setURL('attachment://payment-qr.png').setDescription(`Payment QR for ${item}`)));
       card.addSeparatorComponents(new SeparatorBuilder());
       card.addTextDisplayComponents(new TextDisplayBuilder().setContent('**After payment, please send a screenshot of the payment receipt in your support ticket.**'));
-      return interaction.editReply({components:[card],files:[new AttachmentBuilder(png,{name:'payment-qr.png',description:`Payment QR for ${item}`})],allowedMentions:{parse:[]}});
-     }catch(e){console.error('QR command failed:',e);return interaction.editReply({components:[new ContainerBuilder().addTextDisplayComponents(new TextDisplayBuilder().setContent('## Could not generate QR\nVerify the payment ID/address and try again.'))]});}
+      return await interaction.reply({flags:MessageFlags.IsComponentsV2,components:[card],files:[new AttachmentBuilder(png,{name:'payment-qr.png',description:`Payment QR for ${item}`})],allowedMentions:{parse:[]}});
+     }catch(e){
+      console.error('QR command failed:',e?.stack||e);
+      const errorPayload={content:'Could not generate the QR. Please verify the payment ID/address and try again.',flags:MessageFlags.Ephemeral};
+      if(interaction.deferred||interaction.replied)return interaction.followUp(errorPayload).catch(()=>{});
+      return interaction.reply(errorPayload).catch(()=>{});
+     }
     }
     if(interaction.commandName==='invoice-panel'){
      const row=new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('invoicepanel:open').setLabel('Search Invoice / Open Ticket').setStyle(ButtonStyle.Primary));
