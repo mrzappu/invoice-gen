@@ -605,7 +605,27 @@ function allowInvoiceSave(key) {
   if(invoiceSaveWindows.size>5000) for(const [k,times] of invoiceSaveWindows) if(!times.length||now-times[times.length-1]>windowMs) invoiceSaveWindows.delete(k);
   return true;
 }
-app.get('/health',(_req,res)=>res.status(200).json({ok:true,service:'invoice-bot',database:'sqlite'}));
+let bot;
+let botStatus = 'uninitialized';
+let botLastError = null;
+let botLastConnectedAt = null;
+
+app.get('/health',(_req,res)=>{
+  res.status(200).json({
+    ok:true,
+    service:'invoice-bot',
+    database:'sqlite',
+    bot:{
+      status:bot?.isReady?.()?'online':botStatus,
+      tag:bot?.user?.tag||null,
+      id:bot?.user?.id||null,
+      tokenConfigured:Boolean(process.env.DISCORD_TOKEN&&process.env.DISCORD_TOKEN.trim()),
+      tokenLength:process.env.DISCORD_TOKEN?process.env.DISCORD_TOKEN.trim().length:0,
+      connectedAt:botLastConnectedAt,
+      lastError:botLastError
+    }
+  });
+});
 app.get('/api/invoices/:id',apiAuth,(req,res)=>{const found=getInvoice(req.params.id);if(!found)return res.status(404).json({error:'Invoice not found.'});const safe={...found,products:(found.products||[]).map(({accountEmail,accountPassword,...p})=>p)};res.json(safe);});
 app.post('/api/invoices',apiAuth,async(req,res)=>{try{
  const body=req.body||{};const renderedImageDataUrl=body.renderedInvoiceImage;const {renderedInvoiceImage:_discardedImage,...invoiceBody}=body;const user=sessionUser(req);const prior=getInvoice(invoiceBody.invoiceId);
@@ -621,7 +641,6 @@ app.post('/api/invoices',apiAuth,async(req,res)=>{try{
  }catch(e){res.status(400).json({error:e.message||'Could not save invoice.'});}});
 // Sensitive product credentials are not returned by the public invoice API and are never rendered into invoice exports.
 
-let bot;
 const issueTypes=['Replace','Help','Bug','Refund'];
 const short=(s,n=90)=>String(s||'—').slice(0,n);
 function v2Card(title,body,components=[]) {
@@ -749,18 +768,15 @@ async function startTicket(interaction,invoiceId,productIndex,issueType) {
   await channel.send({components:[new ContainerBuilder().setAccentColor(0xf5b400).addTextDisplayComponents(new TextDisplayBuilder().setContent(`## Support Ticket\n${body}`)).addSeparatorComponents(new SeparatorBuilder()).addActionRowComponents(...ticketControls(ticketId,'open',null))],flags:MessageFlags.IsComponentsV2});
   const openTicket=new ActionRowBuilder().addComponents(new ButtonBuilder().setLabel('Open Ticket Channel').setStyle(ButtonStyle.Link).setURL(`https://discord.com/channels/${guild.id}/${channel.id}`));return respondInteraction(interaction,{content:`Ticket created: ${channel}. Use the button below to jump to the channel.`,components:[openTicket],ephemeral:true});
 }
-async function startBot(){
- if(!process.env.DISCORD_TOKEN){console.log('DISCORD_TOKEN not set; website will run without Discord bot.');return;}
- bot=new Client({intents:[GatewayIntentBits.Guilds,GatewayIntentBits.GuildMessages,GatewayIntentBits.MessageContent]});
- const commands=[
-  new SlashCommandBuilder().setName('resize').setDescription('Resize an image to 3840×2160 and return PNG').addAttachmentOption(o=>o.setName('image').setDescription('Image to resize').setRequired(true)).addStringOption(o=>o.setName('fit').setDescription('How to fit the image').addChoices({name:'Contain (no crop)',value:'contain'},{name:'Cover (crop edges)',value:'cover'})),
-  new SlashCommandBuilder().setName('invoice-panel').setDescription('Open the invoice support panel'),
-  new SlashCommandBuilder().setName('invoice-inspect').setDescription('Admin: inspect a saved invoice').addStringOption(o=>o.setName('invoice_id').setDescription('Invoice ID to inspect').setRequired(true)),
-  new SlashCommandBuilder().setName('invoice-replacement').setDescription('Staff: create a replacement invoice image and matching PDF').addStringOption(o=>o.setName('invoice_id').setDescription('Invoice ID to replace').setRequired(true)),
-  new SlashCommandBuilder().setName('qr').setDescription('Admin only: post a payment QR publicly').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(o=>o.setName('payment_type').setDescription('Payment network').setRequired(true).addChoices({name:'UPI',value:'upi'},{name:'Litecoin (LTC)',value:'ltc'})).addStringOption(o=>o.setName('address').setDescription('UPI ID or Litecoin wallet address').setRequired(true).setMaxLength(200)).addStringOption(o=>o.setName('item').setDescription('Item / order description').setRequired(true).setMaxLength(100)).addNumberOption(o=>o.setName('amount').setDescription('Payment amount (INR for UPI, LTC for Litecoin)').setRequired(false).setMinValue(0.00000001).setMaxValue(1000000000)),
- ].map(c=>c.toJSON());
- bot.once('ready',async()=>{console.log(`Discord bot logged in as ${bot.user.tag}`);try{const rest=new REST({version:'10'}).setToken(process.env.DISCORD_TOKEN);if(process.env.GUILD_ID&&process.env.CLIENT_ID){await rest.put(Routes.applicationGuildCommands(process.env.CLIENT_ID,process.env.GUILD_ID),{body:commands});console.log(`Guild slash commands registered for guild ${process.env.GUILD_ID}.`);}else if(process.env.CLIENT_ID){await rest.put(Routes.applicationCommands(process.env.CLIENT_ID),{body:commands});console.log('Global slash commands registered. Global command updates may take time to appear; set GUILD_ID for fast testing.');}else console.error('CLIENT_ID is missing: slash commands cannot be registered. Add CLIENT_ID in Render Environment, then restart/redeploy.');}catch(e){console.error('Command registration failed. Check CLIENT_ID, DISCORD_TOKEN, and GUILD_ID:',e?.stack||e);}});
- bot.on('interactionCreate',async interaction=>{
+const botCommands=[
+ new SlashCommandBuilder().setName('resize').setDescription('Resize an image to 3840×2160 and return PNG').addAttachmentOption(o=>o.setName('image').setDescription('Image to resize').setRequired(true)).addStringOption(o=>o.setName('fit').setDescription('How to fit the image').addChoices({name:'Contain (no crop)',value:'contain'},{name:'Cover (crop edges)',value:'cover'})),
+ new SlashCommandBuilder().setName('invoice-panel').setDescription('Open the invoice support panel'),
+ new SlashCommandBuilder().setName('invoice-inspect').setDescription('Admin: inspect a saved invoice').addStringOption(o=>o.setName('invoice_id').setDescription('Invoice ID to inspect').setRequired(true)),
+ new SlashCommandBuilder().setName('invoice-replacement').setDescription('Staff: create a replacement invoice image and matching PDF').addStringOption(o=>o.setName('invoice_id').setDescription('Invoice ID to replace').setRequired(true)),
+ new SlashCommandBuilder().setName('qr').setDescription('Admin only: post a payment QR publicly').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(o=>o.setName('payment_type').setDescription('Payment network').setRequired(true).addChoices({name:'UPI',value:'upi'},{name:'Litecoin (LTC)',value:'ltc'})).addStringOption(o=>o.setName('address').setDescription('UPI ID or Litecoin wallet address').setRequired(true).setMaxLength(200)).addStringOption(o=>o.setName('item').setDescription('Item / order description').setRequired(true).setMaxLength(100)).addNumberOption(o=>o.setName('amount').setDescription('Payment amount (INR for UPI, LTC for Litecoin)').setRequired(false).setMinValue(0.00000001).setMaxValue(1000000000)),
+].map(c=>c.toJSON());
+
+async function handleInteraction(interaction){
   try{
    if(interaction.isChatInputCommand()){
     if(interaction.commandName==='resize'){
@@ -956,8 +972,75 @@ async function startBot(){
     return interaction.reply({content:action==='ticketadd'?'Selected users added to ticket.':'Selected users removed from ticket where allowed.',ephemeral:true});
    }
   }catch(e){console.error('Interaction failed:',e);const msg='Something went wrong processing this action. Check the server logs.';if(interaction.deferred||interaction.replied)await interaction.followUp({content:msg,ephemeral:true}).catch(()=>{});else await interaction.reply({content:msg,ephemeral:true}).catch(()=>{});}
- });
- bot.on('error',e=>console.error('Discord client error:',e));await bot.login(process.env.DISCORD_TOKEN);
 }
+
+async function startBot(){
+ const token = String(process.env.DISCORD_TOKEN || '').trim();
+ if(!token){
+  botStatus = 'no_token';
+  botLastError = 'DISCORD_TOKEN environment variable is not set in Render.';
+  console.warn('[Bot] DISCORD_TOKEN is not set; website will run without Discord bot.');
+  return;
+ }
+
+ async function connect(useMessageContent = true){
+  botStatus = 'connecting';
+  console.log(`[Bot] Connecting to Discord (token length: ${token.length}, MessageContent intent: ${useMessageContent})...`);
+  const intents = [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages];
+  if(useMessageContent) intents.push(GatewayIntentBits.MessageContent);
+
+  bot = new Client({ intents });
+  bot.once('ready', async () => {
+   botStatus = 'online';
+   botLastError = null;
+   botLastConnectedAt = new Date().toISOString();
+   console.log(`[Bot] Discord bot logged in successfully as ${bot.user.tag} (ID: ${bot.user.id})`);
+   try{
+    const rest = new REST({ version: '10' }).setToken(token);
+    const clientId = String(process.env.CLIENT_ID || process.env.DISCORD_OAUTH_CLIENT_ID || '').trim();
+    const guildId = String(process.env.GUILD_ID || '').trim();
+    if(guildId && clientId){
+     await rest.put(Routes.applicationGuildCommands(clientId, guildId), { body: botCommands });
+     console.log(`[Bot] Guild slash commands registered for guild ${guildId}.`);
+    } else if(clientId){
+     await rest.put(Routes.applicationCommands(clientId), { body: botCommands });
+     console.log('[Bot] Global slash commands registered.');
+    } else {
+     console.warn('[Bot] CLIENT_ID is missing: slash commands cannot be registered.');
+    }
+   }catch(e){console.error('[Bot] Slash command registration error:', e?.message || e);}
+  });
+  bot.on('interactionCreate', handleInteraction);
+  bot.on('error', e => {
+   botLastError = e.message || String(e);
+   console.error('[Bot] Discord client error:', e);
+  });
+
+  try {
+   await bot.login(token);
+  } catch(err) {
+   botLastError = err.message || String(err);
+   console.error('[Bot] bot.login() failed:', err.message || err);
+   if(useMessageContent && (err.code === 'DisallowedIntents' || String(err.message).includes('DisallowedIntents') || String(err.message).includes('Privileged intent'))){
+    console.warn('[Bot] Message Content intent rejected by Discord. Retrying without it...');
+    return connect(false);
+   }
+   throw err;
+  }
+ }
+
+ try {
+  await connect(true);
+ } catch(err) {
+  botStatus = 'failed';
+  botLastError = err.message || String(err);
+  console.error('[Bot] Discord bot startup failed:', err.message || err);
+  setTimeout(()=>{
+   console.log('[Bot] Retrying bot connection in background...');
+   startBot().catch(()=>{});
+  }, 30000).unref();
+ }
+}
+
 app.listen(PORT,'0.0.0.0',()=>console.log(`Web service listening on ${PORT}; SQLite DB: ${DB_FILE}`));
 startBot().catch(e=>console.error('Discord bot startup failed; website remains online:',e));
