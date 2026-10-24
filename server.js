@@ -18,6 +18,7 @@ const {
 } = require('discord.js');
 
 const app = express();
+app.set('trust proxy', 1);
 const PORT = Number(process.env.PORT) || 10000;
 const API_KEY = process.env.INVOICE_API_KEY || '';
 const DATA_DIR = process.env.DATA_DIR || __dirname;
@@ -103,6 +104,12 @@ function getOAuthRedirectUri(req) {
 }
 const SESSION_SECRET = String(process.env.SESSION_SECRET || process.env.DISCORD_OAUTH_CLIENT_SECRET || process.env.DISCORD_TOKEN || 'change-this-session-secret').trim();
 const ADMIN_DISCORD_IDS = new Set(String(process.env.ADMIN_DISCORD_IDS || '').split(',').map(x=>x.trim()).filter(Boolean));
+const oauthStates = new Map();
+setInterval(()=>{
+  const now = Date.now();
+  for(const [s,exp] of oauthStates) { if(exp < now) oauthStates.delete(s); }
+}, 5 * 60 * 1000).unref();
+
 function signValue(value){const data=Buffer.from(JSON.stringify(value)).toString('base64url');const sig=crypto.createHmac('sha256',SESSION_SECRET).update(data).digest('base64url');return `${data}.${sig}`;}
 function readSigned(value){try{const [data,sig]=String(value||'').split('.');if(!data||!sig)return null;const expected=crypto.createHmac('sha256',SESSION_SECRET).update(data).digest('base64url');if(!safeEqual(sig,expected))return null;const obj=JSON.parse(Buffer.from(data,'base64url').toString());if(obj.exp && obj.exp<Date.now())return null;return obj;}catch{return null;}}
 function cookieValue(req,name){const raw=String(req.headers.cookie||'');const m=raw.split(';').map(x=>x.trim()).find(x=>x.startsWith(name+'='));return m?decodeURIComponent(m.slice(name.length+1)):'';}
@@ -120,6 +127,7 @@ app.get('/auth/discord',(req,res)=>{
    return res.status(503).type('html').send(`<!doctype html><html><head><meta charset="utf-8"><title>Discord OAuth Not Configured</title><style>body{background:#0c0f17;color:#e2e8f0;font-family:system-ui;padding:40px;max-width:640px;margin:0 auto}h1{color:#f87171}code{background:#1e293b;padding:2px 6px;border-radius:4px;color:#93c5fd}ul{line-height:1.8}a{color:#60a5fa}</style></head><body><h1>OAuth Configuration Incomplete</h1><p>The following required environment variable(s) are missing in Render:</p><ul>${missing.map(m=>`<li><code>${escapeHtml(m)}</code></li>`).join('')}</ul><p>Please set them in Render &rarr; Environment, then redeploy.</p><p><a href="/">&larr; Back to Invoice Studio</a></p></body></html>`);
  }
  const state=crypto.randomBytes(24).toString('hex');
+ oauthStates.set(state, Date.now() + 10 * 60 * 1000);
  res.setHeader('Set-Cookie',`invoice_oauth_state=${signValue({state,exp:Date.now()+10*60*1000})}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=600`);
  const url=new URL('https://discord.com/oauth2/authorize');url.searchParams.set('client_id',OAUTH_CLIENT_ID);url.searchParams.set('redirect_uri',redirectUri);url.searchParams.set('response_type','code');url.searchParams.set('scope','identify');url.searchParams.set('state',state);
  res.redirect(url.toString());
@@ -127,8 +135,40 @@ app.get('/auth/discord',(req,res)=>{
 app.get('/auth/discord/callback',async(req,res)=>{
  const redirectUri = getOAuthRedirectUri(req);
  try{
-  const saved=readSigned(cookieValue(req,'invoice_oauth_state'));res.setHeader('Set-Cookie','invoice_oauth_state=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0');
-  if(!saved||!req.query.state||!safeEqual(saved.state,req.query.state))return res.status(400).send('Invalid or expired Discord login state. Please try again.');
+  const incomingState = String(req.query.state || '').trim();
+  const savedCookie = readSigned(cookieValue(req,'invoice_oauth_state'));
+  res.setHeader('Set-Cookie','invoice_oauth_state=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0');
+
+  const serverExp = incomingState ? oauthStates.get(incomingState) : null;
+  const isServerValid = Boolean(serverExp && serverExp > Date.now());
+  const isCookieValid = Boolean(savedCookie && incomingState && safeEqual(savedCookie.state, incomingState));
+
+  if (incomingState) oauthStates.delete(incomingState);
+
+  if(!incomingState || (!isServerValid && !isCookieValid)){
+    return res.status(400).type('html').send(`<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Login Session Expired</title>
+<style>
+body{font-family:system-ui,-apple-system,sans-serif;background:#0c0f17;color:#e2e8f0;padding:40px 20px;line-height:1.6;max-width:620px;margin:0 auto}
+.card{background:#161b26;border:1px solid #2d3748;border-radius:12px;padding:24px;box-shadow:0 10px 25px rgba(0,0,0,.5)}
+h1{color:#f59e0b;font-size:22px;margin-top:0}
+p{color:#cbd5e1;margin:12px 0}
+.btn{display:inline-block;margin-top:14px;background:#5865F2;color:#fff;padding:10px 20px;border-radius:6px;font-weight:600;text-decoration:none}
+.btn:hover{background:#4752c4}
+.sub{color:#94a3b8;font-size:13px;margin-top:16px}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Login Session Expired or Already Used</h1>
+  <p>Discord login links can only be used once. This happens if you refreshed the callback page, used the back button, or took longer than 10 minutes to authorize.</p>
+  <a class="btn" href="/auth/discord">Click Here to Login with Discord</a>
+  <p class="sub"><a style="color:#60a5fa" href="/">&larr; Return to Invoice Studio</a></p>
+</div>
+</body>
+</html>`);
+  }
   if(req.query.error)return res.status(400).send(`Discord login was cancelled or denied: ${escapeHtml(req.query.error_description||req.query.error)}`);
   if(!req.query.code)return res.status(400).send('Discord login was cancelled.');
   const tokenResponse=await fetch('https://discord.com/api/oauth2/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({client_id:OAUTH_CLIENT_ID,client_secret:OAUTH_CLIENT_SECRET,grant_type:'authorization_code',code:String(req.query.code),redirect_uri:redirectUri})});
