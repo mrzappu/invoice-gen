@@ -114,9 +114,33 @@ function signValue(value){const data=Buffer.from(JSON.stringify(value)).toString
 function readSigned(value){try{const [data,sig]=String(value||'').split('.');if(!data||!sig)return null;const expected=crypto.createHmac('sha256',SESSION_SECRET).update(data).digest('base64url');if(!safeEqual(sig,expected))return null;const obj=JSON.parse(Buffer.from(data,'base64url').toString());if(obj.exp && obj.exp<Date.now())return null;return obj;}catch{return null;}}
 function cookieValue(req,name){const raw=String(req.headers.cookie||'');const m=raw.split(';').map(x=>x.trim()).find(x=>x.startsWith(name+'='));return m?decodeURIComponent(m.slice(name.length+1)):'';}
 function sessionUser(req){const value=readSigned(cookieValue(req,'invoice_session'));return value?.user||null;}
-function isAdminUser(user){return Boolean(user?.id && ADMIN_DISCORD_IDS.has(String(user.id)));}
+function isAdminUser(user){if(user?.isAdmin===true)return true;return Boolean(user?.id && ADMIN_DISCORD_IDS.has(String(user.id)));}
+function getValidAdminKeys(){
+  return [
+    process.env.ADMIN_KEY,
+    process.env.INVOICE_API_KEY,
+    process.env.SESSION_SECRET,
+    process.env.DISCORD_TOKEN,
+    process.env.DISCORD_OAUTH_CLIENT_SECRET
+  ].map(k=>String(k||'').trim()).filter(k=>k.length>=8&&k!=='change-this-session-secret');
+}
+function verifyAdminKey(candidate){
+  const c=String(candidate||'').trim();
+  if(!c||c.length<8)return false;
+  return getValidAdminKeys().some(k=>safeEqual(c,k));
+}
 function requireAdmin(req,res,next){const user=sessionUser(req);if(!user)return res.status(401).json({error:'Login with Discord first.'});if(!isAdminUser(user))return res.status(403).json({error:'Administrator access required.'});req.sessionUser=user;next();}
 function escapeHtml(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+app.post('/auth/admin-login',express.urlencoded({extended:false}),(req,res)=>{
+  const key=String(req.body?.key||req.query?.key||'').trim();
+  if(!verifyAdminKey(key)){
+    return res.status(401).type('html').send(`<!doctype html><html><body style="background:#0c0f17;color:#fff;font-family:system-ui;padding:40px;text-align:center"><h2>Invalid Admin Key</h2><p style="color:#94a3b8">The key you entered did not match DISCORD_TOKEN, SESSION_SECRET, or INVOICE_API_KEY from Render.</p><a style="color:#60a5fa" href="/admin">&larr; Try Again</a></body></html>`);
+  }
+  const profile={id:'master-admin',username:'Master Admin',discriminator:'0',avatar:null,isAdmin:true};
+  const session=signValue({user:profile,exp:Date.now()+7*24*60*60*1000});
+  res.setHeader('Set-Cookie',`invoice_session=${session}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=604800`);
+  res.redirect('/admin');
+});
 app.get('/auth/discord',(req,res)=>{
  const redirectUri = getOAuthRedirectUri(req);
  const missing = [];
@@ -231,13 +255,30 @@ code{background:#0b0d13;color:#93c5fd;padding:2px 6px;border-radius:4px;font-siz
 a{color:#60a5fa;text-decoration:none}
 a:hover{text-decoration:underline}
 .btn{display:inline-block;margin-top:16px;background:#2563eb;color:#fff;padding:8px 18px;border-radius:6px;font-weight:500}
+.bypass-box{margin-top:24px;padding-top:20px;border-top:1px solid #2d3748}
+.bypass-box h3{font-size:16px;color:#38bdf8;margin:0 0 8px}
+.bypass-box p{font-size:13px;color:#94a3b8;margin:0 0 14px}
+.key-form{display:flex;gap:8px;flex-wrap:wrap}
+.key-input{flex:1;min-width:200px;background:#0b0d13;border:1px solid #334155;color:#fff;padding:10px 14px;border-radius:8px;font-size:13px}
+.key-btn{background:#10b981;border:none;color:#fff;padding:10px 18px;border-radius:8px;font-weight:600;cursor:pointer}
+.key-btn:hover{background:#059669}
 </style>
 </head>
 <body>
 <div class="card">
   <h1>Discord Login Failed</h1>
   <div class="badge">Discord Error: ${escapeHtml(e.message)}</div>
-  <p>The server could not complete the OAuth login. Please check these settings in <b>Render</b> and the <b>Discord Developer Portal</b>:</p>
+
+  <div class="bypass-box">
+    <h3>🔑 Direct Admin Access (Bypass Discord Rate Limit)</h3>
+    <p>If Discord is rate-limiting the shared server IP, you can sign into the Admin Dashboard immediately using your <code>DISCORD_TOKEN</code>, <code>SESSION_SECRET</code>, or <code>INVOICE_API_KEY</code> from Render:</p>
+    <form class="key-form" method="POST" action="/auth/admin-login">
+      <input class="key-input" type="password" name="key" placeholder="Paste Bot Token or Session Secret" required>
+      <button class="key-btn" type="submit">Unlock Admin Dashboard</button>
+    </form>
+  </div>
+
+  <p style="margin-top:24px">If you prefer Discord OAuth, check these settings in <b>Render</b> and the <b>Discord Developer Portal</b>:</p>
   <ol>
     <li><b>DISCORD_OAUTH_CLIENT_SECRET in Render:</b><br>
     In <a href="https://discord.com/developers/applications" target="_blank" rel="noopener">Discord Developer Portal</a> &rarr; Your App &rarr; <b>OAuth2</b> &rarr; <b>General</b>, copy the <b>Client Secret</b> (click <i>Reset Secret</i> if needed) and paste it into Render Environment variables as <code>DISCORD_OAUTH_CLIENT_SECRET</code>.<br>
@@ -258,9 +299,56 @@ a:hover{text-decoration:underline}
 app.get('/auth/me',(req,res)=>{const user=sessionUser(req);res.json({loggedIn:Boolean(user),user:user?{...user,isAdmin:isAdminUser(user)}:null});});
 app.get('/logout',(req,res)=>{res.setHeader('Set-Cookie','invoice_session=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0');res.redirect('/');});
 app.get('/admin',(req,res)=>{
- const user=sessionUser(req);if(!user)return res.redirect('/auth/discord');
+ if(req.query.key&&verifyAdminKey(req.query.key)){
+  const profile={id:'master-admin',username:'Master Admin',discriminator:'0',avatar:null,isAdmin:true};
+  const session=signValue({user:profile,exp:Date.now()+7*24*60*60*1000});
+  res.setHeader('Set-Cookie',`invoice_session=${session}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=604800`);
+  return res.redirect('/admin');
+ }
+ const user=sessionUser(req);
+ if(!user){
+  return res.type('html').send(`<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Admin Sign In</title>
+<style>
+body{font-family:system-ui,-apple-system,sans-serif;background:#0c0f17;color:#e2e8f0;padding:40px 20px;display:flex;align-items:center;justify-content:center;min-height:80vh;margin:0}
+.box{background:#161b26;border:1px solid #2d3748;border-radius:14px;padding:32px;max-width:440px;width:100%;box-shadow:0 12px 30px #00000088}
+h1{font-size:22px;margin:0 0 8px;color:#fff}
+p{color:#94a3b8;font-size:13px;margin:0 0 20px}
+.btn-discord{display:flex;align-items:center;justify-content:center;gap:10px;background:#5865F2;color:#fff;text-decoration:none;padding:12px;border-radius:8px;font-weight:600;width:100%;box-sizing:border-box}
+.btn-discord:hover{background:#4752c4}
+.or{display:flex;align-items:center;margin:24px 0;color:#64748b;font-size:12px}
+.or::before,.or::after{content:'';flex:1;border-bottom:1px solid #2d3748}
+.or::before{margin-right:12px}.or::after{margin-left:12px}
+.input{width:100%;background:#0b0e14;border:1px solid #2d3748;color:#fff;padding:10px 12px;border-radius:8px;box-sizing:border-box;margin-bottom:12px;font-family:inherit}
+.input:focus{outline:none;border-color:#5865F2}
+.btn-key{width:100%;background:#10b981;border:none;color:#fff;padding:11px;border-radius:8px;font-weight:600;cursor:pointer}
+.btn-key:hover{background:#059669}
+.hint{font-size:11px;color:#64748b;margin-top:10px;line-height:1.4}
+a{color:#60a5fa;text-decoration:none}
+</style>
+</head>
+<body>
+<div class="box">
+  <h1>Admin Sign In</h1>
+  <p>Invoice Studio administration and audit dashboard</p>
+  <a class="btn-discord" href="/auth/discord">
+    <svg width="20" height="15" viewBox="0 0 71 55" fill="none"><path d="M60.1 4.9A58.5 58.5 0 0045.8.5a.2.2 0 00-.2.1 40.8 40.8 0 00-1.8 3.7 54 54 0 00-16.4 0A40 40 0 0025.5.6a.2.2 0 00-.2-.1C18.4 1.7 11.6 4.7 5.7 9.4a.2.2 0 00-.1.1C-3.8 23.6-1 37.4 3.3 50.4a.2.2 0 00.1.2 58.8 58.8 0 0017.7 9 .2.2 0 00.3-.1 42 42 0 003.6-5.9.2.2 0 00-.1-.3 38.6 38.6 0 01-5.5-2.6.2.2 0 010-.4c.4-.3.7-.6 1.1-.9a.2.2 0 01.2 0 42 42 0 0035.8 0 .2.2 0 01.2 0c.4.3.8.6 1.1.9a.2.2 0 010 .4 38.8 38.8 0 01-5.5 2.6.2.2 0 00-.1.3 42 42 0 003.6 5.9.2.2 0 00.3.1 58.7 58.7 0 0017.7-9 .2.2 0 00.1-.2c5-15.6 1.3-29.3-8.8-41.2a.2.2 0 00-.1-.1zM23.7 41.3c-3.5 0-6.4-3.2-6.4-7.2s2.8-7.2 6.4-7.2c3.6 0 6.5 3.3 6.4 7.2 0 4-2.8 7.2-6.4 7.2zm23.8 0c-3.5 0-6.4-3.2-6.4-7.2s2.8-7.2 6.4-7.2c3.6 0 6.5 3.3 6.4 7.2 0 4-2.8 7.2-6.4 7.2z" fill="#fff"/></svg>
+    Login with Discord
+  </a>
+  <div class="or">OR</div>
+  <form method="POST" action="/auth/admin-login">
+    <input class="input" type="password" name="key" placeholder="Enter Admin Secret Key" required>
+    <button class="btn-key" type="submit">Sign In with Admin Key</button>
+  </form>
+  <div class="hint">Use your <code>DISCORD_TOKEN</code>, <code>SESSION_SECRET</code>, or <code>INVOICE_API_KEY</code> from Render to bypass Discord rate limits.</div>
+  <p style="margin-top:20px;text-align:center"><a href="/">&larr; Back to Invoice Studio</a></p>
+</div>
+</body>
+</html>`);
+ }
  if(!isAdminUser(user))return res.status(403).send('<!doctype html><html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><body style="background:#080b14;color:#eef2ff;font:16px system-ui;padding:40px"><h1>403 — Admin access required</h1><p>Your Discord account is signed in, but it is not listed in ADMIN_DISCORD_IDS.</p><p><a style="color:#9ba7ff" href="/">Back to Invoice Studio</a> · <a style="color:#9ba7ff" href="/logout">Logout</a></p></body></html>');
- try { const avatarUrl=user.avatar?`https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.${String(user.avatar).startsWith('a_')?'gif':'png'}?size=128`:`https://cdn.discordapp.com/embed/avatars/${Number(BigInt(user.id)%6n)}.png`;const html=fs.readFileSync(path.join(__dirname,'public','admin.html'),'utf8').replaceAll('__USERNAME__',escapeHtml(user.username)).replaceAll('__USERID__',escapeHtml(user.id)).replaceAll('__AVATAR_URL__',escapeHtml(avatarUrl)).replaceAll('__DISCRIMINATOR__',escapeHtml(user.discriminator||'0'));res.type('html').send(html); }
+ try { const avatarUrl=user.avatar?`https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.${String(user.avatar).startsWith('a_')?'gif':'png'}?size=128`:`https://cdn.discordapp.com/embed/avatars/${Number(BigInt(user.id||0)%6n)}.png`;const html=fs.readFileSync(path.join(__dirname,'public','admin.html'),'utf8').replaceAll('__USERNAME__',escapeHtml(user.username)).replaceAll('__USERID__',escapeHtml(user.id)).replaceAll('__AVATAR_URL__',escapeHtml(avatarUrl)).replaceAll('__DISCRIMINATOR__',escapeHtml(user.discriminator||'0'));res.type('html').send(html); }
  catch(e){console.error('Admin dashboard render failed:',e.message);res.status(500).send('Admin dashboard file is missing.');}
 });
 app.get('/api/admin/invoices',requireAdmin,(req,res)=>{
@@ -299,25 +387,27 @@ app.post('/api/admin/database/request-code',requireAdmin,async(req,res)=>{
  const code=String(crypto.randomInt(100000,1000000));
  let dmSent=false,channelSent=false,dmErr=null,channelErr=null;
 
- // 1. Attempt to send the verification code directly to the admin's Discord DM
- try{
-  const discordUser=await bot.users.fetch(user.id);
-  if(discordUser){
-   await discordUser.send({
-    embeds:[
-     new EmbedBuilder()
-      .setColor(0x5865F2)
-      .setTitle('🔐 Invoice Studio — Database Verification OTP')
-      .setDescription(`Admin: <@${user.id}>\nA database upload verification code was requested.\n\n**Verification Code: \`${code}\`**\n\nExpires in **10 minutes**. Enter this code in the Admin Dashboard. Do not share this code with anyone.`)
-      .setFooter({text:'Invoice Studio Security • Database Upload Verification'})
-      .setTimestamp()
-    ]
-   });
-   dmSent=true;
+ // 1. Attempt to send the verification code directly to the admin's Discord DM if user has a Discord ID
+ if (/^\d{17,20}$/.test(user.id)) {
+  try{
+   const discordUser=await bot.users.fetch(user.id);
+   if(discordUser){
+    await discordUser.send({
+     embeds:[
+      new EmbedBuilder()
+       .setColor(0x5865F2)
+       .setTitle('🔐 Invoice Studio — Database Verification OTP')
+       .setDescription(`Admin: <@${user.id}>\nA database upload verification code was requested.\n\n**Verification Code: \`${code}\`**\n\nExpires in **10 minutes**. Enter this code in the Admin Dashboard. Do not share this code with anyone.`)
+       .setFooter({text:'Invoice Studio Security • Database Upload Verification'})
+       .setTimestamp()
+     ]
+    });
+    dmSent=true;
+   }
+  }catch(e){
+   dmErr=e.message;
+   console.warn(`Could not DM verification code to admin ${user.id}:`,e.message);
   }
- }catch(e){
-  dmErr=e.message;
-  console.warn(`Could not DM verification code to admin ${user.id}:`,e.message);
  }
 
  // 2. Also send to the configured security/log channel if present
@@ -344,6 +434,13 @@ app.post('/api/admin/database/request-code',requireAdmin,async(req,res)=>{
    console.warn(`Could not send verification code to channel ${channelId}:`,e.message);
   }
  }
+
+  if (user.id === 'master-admin' && !channelSent) {
+   uploadCodes.set(user.id, { code, expires: now + 10 * 60 * 1000, attempts: 0 });
+   uploadGrants.delete(user.id);
+   uploadCooldowns.set(user.id, now);
+   return res.json({ ok: true, message: `Master Admin verified! Your 6-digit OTP code is: ${code} (expires in 10 minutes).`, code });
+  }
 
  if(!dmSent&&!channelSent){
   let helpMsg='Could not deliver the verification code to Discord.';

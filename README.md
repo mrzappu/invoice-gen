@@ -123,6 +123,10 @@ Install/download games through the official Steam client using an account that o
   - Open https://discord.com/developers/applications and select your application.
   - Go to **OAuth2** &rarr; **Redirects**.
   - Add your exact callback URL: `https://<your-render-subdomain>.onrender.com/auth/discord/callback` (e.g. `https://invoice-gen-bbgn.onrender.com/auth/discord/callback`). Click **Save Changes**.
+- **Emergency Direct Admin Access (Bypass Discord Rate Limits):**
+  - If Discord is ever rate-limiting the shared host IP (Cloudflare Error 1015), you can sign into `/admin` directly without Discord OAuth!
+  - Go to `https://<your-render-subdomain>.onrender.com/admin` and enter your `DISCORD_TOKEN`, `SESSION_SECRET`, or `INVOICE_API_KEY` in the **Sign In with Admin Key** form.
+  - Or directly visit `https://<your-render-subdomain>.onrender.com/admin?key=<YOUR_SECRET>`.
 - `INVOICE_LOG_CHANNEL_ID` is the Discord text channel ID where invoice creation/update reports and a PDF attachment are sent. `INVOICE_NOTIFICATION_CHANNEL_ID` is accepted as an alternate name. Give the bot View Channel, Send Messages, and Attach Files permissions there.
 - The invoice website remains usable without logging in; invoice records made without OAuth show `Website user` rather than a verified Discord identity. To attribute invoices to a real Discord account, use Login with Discord before creating/saving them.
 - `/admin` lists invoice activity with creator, buyer, date, products, totals, and the stored record. Only IDs in `ADMIN_DISCORD_IDS` can access it. Private account credentials are stored in the database payload; restrict database and admin access accordingly.
