@@ -264,23 +264,93 @@ app.get('/api/admin/database/download',requireAdmin,async(req,res)=>{
 const uploadCodes=new Map(),uploadGrants=new Map(),uploadCooldowns=new Map();
 const databaseUpload=multer({storage:multer.memoryStorage(),limits:{fileSize:50*1024*1024,files:1}});
 app.post('/api/admin/database/request-code',requireAdmin,async(req,res)=>{
- const user=req.sessionUser,now=Date.now(),last=uploadCooldowns.get(user.id)||0;if(now-last<60000)return res.status(429).json({error:`Please wait ${Math.ceil((60000-(now-last))/1000)} seconds before requesting another code.`});
- const channelId=process.env.ADMIN_SECURITY_CHANNEL_ID||process.env.INVOICE_LOG_CHANNEL_ID||process.env.INVOICE_NOTIFICATION_CHANNEL_ID;if(!channelId)return res.status(503).json({error:'Set ADMIN_SECURITY_CHANNEL_ID (recommended) or INVOICE_LOG_CHANNEL_ID in Render first.'});if(!bot)return res.status(503).json({error:'Discord bot is not connected yet. Try again shortly.'});
- try{const channel=await bot.channels.fetch(channelId);if(!channel?.isTextBased()||!channel.send)return res.status(400).json({error:'Configured verification channel is not a text channel the bot can send to.'});
-  const code=String(crypto.randomInt(0,1000000)).padStart(6,'0');uploadCodes.set(user.id,{hash:crypto.createHash('sha256').update(`${user.id}:${code}:${SESSION_SECRET}`).digest('hex'),expires:now+10*60*1000,attempts:0});uploadGrants.delete(user.id);uploadCooldowns.set(user.id,now);
-  await channel.send({embeds:[new EmbedBuilder().setColor(0xf0b64b).setTitle('🔐 Database upload verification').setDescription(`Admin: <@${user.id}> (\`${user.id}\`)
-A database upload verification code was requested.
+ const user=req.sessionUser,now=Date.now(),last=uploadCooldowns.get(user.id)||0;
+ if(now-last<30000)return res.status(429).json({error:`Please wait ${Math.ceil((30000-(now-last))/1000)} seconds before requesting another code.`});
+ if(!bot||!bot.isReady?.())return res.status(503).json({error:'Discord bot is not connected yet. Ensure DISCORD_TOKEN is set in Render and wait a few moments.'});
 
-**Verification code: \`${code}\`**
-Expires in **10 minutes**. Do not share this code.`).setFooter({text:'Invoice Studio security • only use this code in the Admin Dashboard'}).setTimestamp()],allowedMentions:{users:[String(user.id)],parse:[]}});
-  res.json({ok:true,message:'Verification code sent to the configured Discord channel. It expires in 10 minutes.'});
- }catch(e){uploadCodes.delete(user.id);console.error('Database verification code send failed:',e.message);res.status(502).json({error:'Could not send the verification code. Check bot permissions and channel ID.'});}
+ const code=String(crypto.randomInt(100000,1000000));
+ let dmSent=false,channelSent=false,dmErr=null,channelErr=null;
+
+ // 1. Attempt to send the verification code directly to the admin's Discord DM
+ try{
+  const discordUser=await bot.users.fetch(user.id);
+  if(discordUser){
+   await discordUser.send({
+    embeds:[
+     new EmbedBuilder()
+      .setColor(0x5865F2)
+      .setTitle('🔐 Invoice Studio — Database Verification OTP')
+      .setDescription(`Admin: <@${user.id}>\nA database upload verification code was requested.\n\n**Verification Code: \`${code}\`**\n\nExpires in **10 minutes**. Enter this code in the Admin Dashboard. Do not share this code with anyone.`)
+      .setFooter({text:'Invoice Studio Security • Database Upload Verification'})
+      .setTimestamp()
+    ]
+   });
+   dmSent=true;
+  }
+ }catch(e){
+  dmErr=e.message;
+  console.warn(`Could not DM verification code to admin ${user.id}:`,e.message);
+ }
+
+ // 2. Also send to the configured security/log channel if present
+ const channelId=process.env.ADMIN_SECURITY_CHANNEL_ID||process.env.INVOICE_LOG_CHANNEL_ID||process.env.INVOICE_NOTIFICATION_CHANNEL_ID;
+ if(channelId){
+  try{
+   const channel=await bot.channels.fetch(channelId);
+   if(channel?.isTextBased()&&channel.send){
+    await channel.send({
+     embeds:[
+      new EmbedBuilder()
+       .setColor(0xf0b64b)
+       .setTitle('🔐 Database upload verification')
+       .setDescription(`Admin: <@${user.id}> (\`${user.id}\`)\nA database upload verification code was requested.\n\n**Verification code: \`${code}\`**\nExpires in **10 minutes**. Do not share this code.`)
+       .setFooter({text:'Invoice Studio security • only use this code in the Admin Dashboard'})
+       .setTimestamp()
+     ],
+     allowedMentions:{users:[String(user.id)],parse:[]}
+    });
+    channelSent=true;
+   }
+  }catch(e){
+   channelErr=e.message;
+   console.warn(`Could not send verification code to channel ${channelId}:`,e.message);
+  }
+ }
+
+ if(!dmSent&&!channelSent){
+  let helpMsg='Could not deliver the verification code to Discord.';
+  if(!channelId){
+   helpMsg='Could not send verification code via Discord DM (your Discord DMs might be closed to server members). Enable Direct Messages in Discord Settings -> Privacy & Safety, or set ADMIN_SECURITY_CHANNEL_ID in Render.';
+  }else{
+   helpMsg=`Could not send verification code. Bot DM failed and channel ${channelId} failed: ${channelErr||dmErr||'Unknown error'}. Check bot permissions in that channel.`;
+  }
+  return res.status(502).json({error:helpMsg});
+ }
+
+ uploadCodes.set(user.id,{code,expires:now+10*60*1000,attempts:0});
+ uploadGrants.delete(user.id);
+ uploadCooldowns.set(user.id,now);
+
+ let successMsg='Verification code sent to your Discord Direct Messages (DM)! It expires in 10 minutes.';
+ if(dmSent&&channelSent){
+  successMsg='Verification code sent to your Discord DM and the security channel! It expires in 10 minutes.';
+ }else if(!dmSent&&channelSent){
+  successMsg='Verification code sent to the Discord security channel! (Could not DM: enable DMs from server members). It expires in 10 minutes.';
+ }
+ res.json({ok:true,message:successMsg});
 });
 app.post('/api/admin/database/verify-code',requireAdmin,(req,res)=>{
- const user=req.sessionUser,entry=uploadCodes.get(user.id),code=String(req.body?.code||'').trim();if(!entry||entry.expires<Date.now()){uploadCodes.delete(user.id);return res.status(400).json({error:'Code expired or not requested. Request a new code.'});}
+ const user=req.sessionUser,entry=uploadCodes.get(user.id),code=String(req.body?.code||'').trim();
+ if(!entry||entry.expires<Date.now()){uploadCodes.delete(user.id);return res.status(400).json({error:'Code expired or not requested. Request a new code.'});}
  if(!/^\d{6}$/.test(code))return res.status(400).json({error:'Enter the 6-digit code.'});
- const digest=crypto.createHash('sha256').update(`${user.id}:${code}:${SESSION_SECRET}`).digest('hex');if(!safeEqual(entry.hash,digest)){entry.attempts++;if(entry.attempts>=5)uploadCodes.delete(user.id);return res.status(400).json({error:entry.attempts>=5?'Too many incorrect attempts. Request a new code.':'Incorrect code. Please try again.'});}
- uploadCodes.delete(user.id);uploadGrants.set(user.id,Date.now()+10*60*1000);res.json({ok:true,message:'Verified. You can upload a database backup for the next 10 minutes.'});
+ if(!safeEqual(entry.code,code)){
+  entry.attempts=(entry.attempts||0)+1;
+  if(entry.attempts>=5)uploadCodes.delete(user.id);
+  return res.status(400).json({error:entry.attempts>=5?'Too many incorrect attempts. Request a new code.':'Incorrect code. Please try again.'});
+ }
+ uploadCodes.delete(user.id);
+ uploadGrants.set(user.id,Date.now()+10*60*1000);
+ res.json({ok:true,message:'Verified! You can upload a database backup for the next 10 minutes.'});
 });
 app.post('/api/admin/database/upload',requireAdmin,(req,res,next)=>{const until=uploadGrants.get(req.sessionUser.id)||0;if(until<Date.now()){uploadGrants.delete(req.sessionUser.id);return res.status(403).json({error:'Verify a fresh 6-digit Discord code before uploading.'});}next();},databaseUpload.single('database'),(req,res)=>{
  const user=req.sessionUser;if(!req.file)return res.status(400).json({error:'Choose a SQLite database backup file first.'});const temp=path.join(os.tmpdir(),`invoice-import-${Date.now()}-${crypto.randomBytes(5).toString('hex')}.sqlite`);let source;
