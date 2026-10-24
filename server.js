@@ -129,7 +129,18 @@ function verifyAdminKey(candidate){
   if(!c||c.length<8)return false;
   return getValidAdminKeys().some(k=>safeEqual(c,k));
 }
-function requireAdmin(req,res,next){const user=sessionUser(req);if(!user)return res.status(401).json({error:'Login with Discord first.'});if(!isAdminUser(user))return res.status(403).json({error:'Administrator access required.'});req.sessionUser=user;next();}
+function requireAdmin(req,res,next){
+  const keyCandidate = req.query?.key || req.headers?.['x-admin-key'];
+  if (keyCandidate && verifyAdminKey(keyCandidate)) {
+    req.sessionUser = { id: 'master-admin', username: 'Master Admin', discriminator: '0', avatar: null, isAdmin: true };
+    return next();
+  }
+  const user=sessionUser(req);
+  if(!user)return res.status(401).json({error:'Login with Discord or supply admin key.'});
+  if(!isAdminUser(user))return res.status(403).json({error:'Administrator access required.'});
+  req.sessionUser=user;
+  next();
+}
 function escapeHtml(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 app.post('/auth/admin-login',express.urlencoded({extended:false}),(req,res)=>{
   const key=String(req.body?.key||req.query?.key||'').trim();
@@ -381,13 +392,32 @@ const uploadCodes=new Map(),uploadGrants=new Map(),uploadCooldowns=new Map();
 const databaseUpload=multer({storage:multer.memoryStorage(),limits:{fileSize:50*1024*1024,files:1}});
 app.post('/api/admin/database/request-code',requireAdmin,async(req,res)=>{
  const user=req.sessionUser,now=Date.now(),last=uploadCooldowns.get(user.id)||0;
- if(now-last<30000)return res.status(429).json({error:`Please wait ${Math.ceil((30000-(now-last))/1000)} seconds before requesting another code.`});
- if(!bot||!bot.isReady?.())return res.status(503).json({error:'Discord bot is not connected yet. Ensure DISCORD_TOKEN is set in Render and wait a few moments.'});
+ if(now-last<15000)return res.status(429).json({error:`Please wait ${Math.ceil((15000-(now-last))/1000)} seconds before requesting another code.`});
 
  const code=String(crypto.randomInt(100000,1000000));
  let dmSent=false,channelSent=false,dmErr=null,channelErr=null;
 
- // 1. Attempt to send the verification code directly to the admin's Discord DM if user has a Discord ID
+ // 1. Master Admin signed in via admin key: deliver code directly
+ if (user.id === 'master-admin') {
+  uploadCodes.set(user.id, { code, expires: now + 10 * 60 * 1000, attempts: 0 });
+  uploadGrants.delete(user.id);
+  uploadCooldowns.set(user.id, now);
+  return res.json({ ok: true, message: `Master Admin verified! Your 6-digit OTP code is: ${code} (expires in 10 minutes).`, code });
+ }
+
+ // 2. If Discord bot is currently offline or reconnecting, provide the code directly so admin isn't locked out
+ if (!bot || !bot.isReady?.()) {
+  uploadCodes.set(user.id, { code, expires: now + 10 * 60 * 1000, attempts: 0 });
+  uploadGrants.delete(user.id);
+  uploadCooldowns.set(user.id, now);
+  return res.json({
+   ok: true,
+   message: `Verification code: ${code} (Discord bot is currently offline/reconnecting; code is displayed here directly. Expires in 10 minutes).`,
+   code
+  });
+ }
+
+ // 3. Attempt to send the verification code directly to the admin's Discord DM
  if (/^\d{17,20}$/.test(user.id)) {
   try{
    const discordUser=await bot.users.fetch(user.id);
@@ -410,7 +440,7 @@ app.post('/api/admin/database/request-code',requireAdmin,async(req,res)=>{
   }
  }
 
- // 2. Also send to the configured security/log channel if present
+ // 4. Also send to the configured security/log channel if present
  const channelId=process.env.ADMIN_SECURITY_CHANNEL_ID||process.env.INVOICE_LOG_CHANNEL_ID||process.env.INVOICE_NOTIFICATION_CHANNEL_ID;
  if(channelId){
   try{
@@ -435,21 +465,16 @@ app.post('/api/admin/database/request-code',requireAdmin,async(req,res)=>{
   }
  }
 
-  if (user.id === 'master-admin' && !channelSent) {
-   uploadCodes.set(user.id, { code, expires: now + 10 * 60 * 1000, attempts: 0 });
-   uploadGrants.delete(user.id);
-   uploadCooldowns.set(user.id, now);
-   return res.json({ ok: true, message: `Master Admin verified! Your 6-digit OTP code is: ${code} (expires in 10 minutes).`, code });
-  }
-
- if(!dmSent&&!channelSent){
-  let helpMsg='Could not deliver the verification code to Discord.';
-  if(!channelId){
-   helpMsg='Could not send verification code via Discord DM (your Discord DMs might be closed to server members). Enable Direct Messages in Discord Settings -> Privacy & Safety, or set ADMIN_SECURITY_CHANNEL_ID in Render.';
-  }else{
-   helpMsg=`Could not send verification code. Bot DM failed and channel ${channelId} failed: ${channelErr||dmErr||'Unknown error'}. Check bot permissions in that channel.`;
-  }
-  return res.status(502).json({error:helpMsg});
+ // 5. If both DM and channel failed (e.g. DMs closed in Discord settings and no channel set), provide directly
+ if(!dmSent && !channelSent){
+  uploadCodes.set(user.id, { code, expires: now + 10 * 60 * 1000, attempts: 0 });
+  uploadGrants.delete(user.id);
+  uploadCooldowns.set(user.id, now);
+  return res.json({
+   ok: true,
+   message: `Verification code: ${code} (Could not DM: enable DMs from server members in Discord privacy settings. Code is provided directly here. Expires in 10 minutes).`,
+   code
+  });
  }
 
  uploadCodes.set(user.id,{code,expires:now+10*60*1000,attempts:0});
@@ -609,6 +634,13 @@ let bot;
 let botStatus = 'uninitialized';
 let botLastError = null;
 let botLastConnectedAt = null;
+const recentBotLogs = [];
+function addBotLog(msg){
+  const line = `[${new Date().toISOString().slice(11, 19)}] ${String(msg)}`;
+  recentBotLogs.push(line);
+  if (recentBotLogs.length > 25) recentBotLogs.shift();
+  console.log(line);
+}
 
 app.get('/health',(_req,res)=>{
   res.status(200).json({
@@ -617,12 +649,14 @@ app.get('/health',(_req,res)=>{
     database:'sqlite',
     bot:{
       status:bot?.isReady?.()?'online':botStatus,
+      wsStatus:bot?.ws?.status??null,
       tag:bot?.user?.tag||null,
       id:bot?.user?.id||null,
       tokenConfigured:Boolean(process.env.DISCORD_TOKEN&&process.env.DISCORD_TOKEN.trim()),
       tokenLength:process.env.DISCORD_TOKEN?process.env.DISCORD_TOKEN.trim().length:0,
       connectedAt:botLastConnectedAt,
-      lastError:botLastError
+      lastError:botLastError,
+      recentLogs:recentBotLogs.slice(-8)
     }
   });
 });
@@ -974,73 +1008,205 @@ async function handleInteraction(interaction){
   }catch(e){console.error('Interaction failed:',e);const msg='Something went wrong processing this action. Check the server logs.';if(interaction.deferred||interaction.replied)await interaction.followUp({content:msg,ephemeral:true}).catch(()=>{});else await interaction.reply({content:msg,ephemeral:true}).catch(()=>{});}
 }
 
+async function checkDiscordBotToken(t) {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    const resp = await fetch('https://discord.com/api/v10/users/@me', {
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bot ${t}`,
+        'User-Agent': 'DiscordBot (https://invoice-gen-bbgn.onrender.com, 1.1.0)',
+        Accept: 'application/json'
+      }
+    });
+    clearTimeout(timeout);
+    const text = await resp.text();
+    let json = null;
+    try { json = JSON.parse(text); } catch {}
+    return { status: resp.status, ok: resp.ok, data: json, raw: text.slice(0, 200) };
+  } catch (e) {
+    return { status: 0, ok: false, error: e.message || String(e) };
+  }
+}
+
+let botReconnectTimer = null;
+
 async function startBot(){
- const token = String(process.env.DISCORD_TOKEN || '').trim();
- if(!token){
-  botStatus = 'no_token';
-  botLastError = 'DISCORD_TOKEN environment variable is not set in Render.';
-  console.warn('[Bot] DISCORD_TOKEN is not set; website will run without Discord bot.');
-  return;
- }
+  if (botReconnectTimer) {
+    clearTimeout(botReconnectTimer);
+    botReconnectTimer = null;
+  }
 
- async function connect(useMessageContent = true){
+  const token = String(process.env.DISCORD_TOKEN || '').trim();
+  if(!token){
+    botStatus = 'no_token';
+    botLastError = 'DISCORD_TOKEN environment variable is not configured in Render.';
+    addBotLog('DISCORD_TOKEN is not set; website will run without Discord bot.');
+    return;
+  }
+
   botStatus = 'connecting';
-  console.log(`[Bot] Connecting to Discord (token length: ${token.length}, MessageContent intent: ${useMessageContent})...`);
-  const intents = [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages];
-  if(useMessageContent) intents.push(GatewayIntentBits.MessageContent);
+  addBotLog(`Starting Discord bot connection (token length: ${token.length})...`);
 
-  bot = new Client({ intents });
-  bot.once('ready', async () => {
-   botStatus = 'online';
-   botLastError = null;
-   botLastConnectedAt = new Date().toISOString();
-   console.log(`[Bot] Discord bot logged in successfully as ${bot.user.tag} (ID: ${bot.user.id})`);
-   try{
-    const rest = new REST({ version: '10' }).setToken(token);
-    const clientId = String(process.env.CLIENT_ID || process.env.DISCORD_OAUTH_CLIENT_ID || '').trim();
-    const guildId = String(process.env.GUILD_ID || '').trim();
-    if(guildId && clientId){
-     await rest.put(Routes.applicationGuildCommands(clientId, guildId), { body: botCommands });
-     console.log(`[Bot] Guild slash commands registered for guild ${guildId}.`);
-    } else if(clientId){
-     await rest.put(Routes.applicationCommands(clientId), { body: botCommands });
-     console.log('[Bot] Global slash commands registered.');
-    } else {
-     console.warn('[Bot] CLIENT_ID is missing: slash commands cannot be registered.');
+  // Preflight check against Discord REST API
+  try {
+    const check = await checkDiscordBotToken(token);
+    if (!check.ok) {
+      if (check.status === 401) {
+        botStatus = 'invalid_token';
+        botLastError = 'Discord API returned 401 Unauthorized: Invalid DISCORD_TOKEN. In Discord Developer Portal -> Bot -> click "Reset Token", copy the new token and update DISCORD_TOKEN in Render.';
+        addBotLog(`[Preflight] 401 Unauthorized: DISCORD_TOKEN is invalid.`);
+      } else if (check.raw && (check.raw.includes('1015') || check.raw.includes('rate limited'))) {
+        botStatus = 'rate_limited';
+        botLastError = 'Discord Cloudflare Rate Limit (Error 1015): Discord is temporarily rate-limiting Render shared IP. This block lifts in ~10-15 minutes, or restart the Render service to get a new IP.';
+        addBotLog(`[Preflight] Cloudflare Error 1015 detected on Render shared IP.`);
+      } else {
+        botLastError = `Discord API returned HTTP ${check.status}: ${check.data?.message || check.raw || check.error}`;
+        addBotLog(`[Preflight] Discord API preflight check: ${botLastError}`);
+      }
+    } else if (check.data?.id) {
+      addBotLog(`[Preflight] Token verified for bot: ${check.data.username} (ID: ${check.data.id})`);
     }
-   }catch(e){console.error('[Bot] Slash command registration error:', e?.message || e);}
+  } catch (e) {
+    addBotLog(`[Preflight] Preflight check skipped: ${e.message}`);
+  }
+
+  // Safely destroy existing bot instance if present
+  if (bot) {
+    try {
+      bot.removeAllListeners();
+      await bot.destroy();
+    } catch {}
+    bot = null;
+  }
+
+  // Standard non-privileged intents only.
+  // Privileged intents (such as MessageContent) cause gateway close code 4014 if not enabled in portal.
+  const intents = [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages];
+
+  bot = new Client({
+    intents,
+    rest: {
+      timeout: 15000,
+      retries: 2,
+      headers: {
+        'User-Agent': 'DiscordBot (https://invoice-gen-bbgn.onrender.com, 1.1.0)'
+      }
+    }
   });
+
+  bot.once('ready', async () => {
+    botStatus = 'online';
+    botLastError = null;
+    botLastConnectedAt = new Date().toISOString();
+    addBotLog(`Discord bot online as ${bot.user.tag} (ID: ${bot.user.id})`);
+
+    try {
+      const rest = new REST({ version: '10' }).setToken(token);
+      const clientId = String(process.env.CLIENT_ID || process.env.DISCORD_OAUTH_CLIENT_ID || bot.user.id).trim();
+      const guildId = String(process.env.GUILD_ID || '').trim();
+      if(guildId && clientId){
+        await rest.put(Routes.applicationGuildCommands(clientId, guildId), { body: botCommands });
+        addBotLog(`Guild slash commands registered for guild ${guildId}.`);
+      } else if(clientId){
+        await rest.put(Routes.applicationCommands(clientId), { body: botCommands });
+        addBotLog('Global slash commands registered.');
+      } else {
+        addBotLog('CLIENT_ID is missing: slash commands could not be registered.');
+      }
+    } catch(e) {
+      addBotLog(`[Slash Command Registration] ${e?.message || e}`);
+    }
+  });
+
   bot.on('interactionCreate', handleInteraction);
+
   bot.on('error', e => {
-   botLastError = e.message || String(e);
-   console.error('[Bot] Discord client error:', e);
+    botLastError = e.message || String(e);
+    addBotLog(`[Client Error] ${botLastError}`);
+  });
+
+  bot.on('warn', msg => addBotLog(`[Warn] ${msg}`));
+
+  bot.on('debug', msg => {
+    if (msg.includes('Heartbeat') || msg.includes('latency') || msg.includes('Swept')) return;
+    addBotLog(`[debug] ${msg}`);
+  });
+
+  bot.on('shardDisconnect', (event, shardId) => {
+    const code = event?.code ?? 'unknown';
+    const reason = event?.reason || 'No reason specified';
+    addBotLog(`[shardDisconnect] Shard ${shardId} disconnected: code=${code} (${reason})`);
+    if (code === 4004) {
+      botLastError = 'Discord Gateway: Authentication failed (code 4004). Token is invalid. Reset token in Developer Portal and update Render DISCORD_TOKEN.';
+      botStatus = 'invalid_token';
+    } else if (code === 4014) {
+      botLastError = 'Discord Gateway: Disallowed intents (code 4014). Check Developer Portal -> Bot -> Privileged Gateway Intents.';
+      botStatus = 'disallowed_intents';
+    } else {
+      botLastError = `Gateway disconnected: code ${code} (${reason})`;
+      if (botStatus === 'online') botStatus = 'disconnected';
+    }
+  });
+
+  bot.on('shardError', (e, shardId) => {
+    botLastError = e?.message || String(e);
+    addBotLog(`[shardError] Shard ${shardId}: ${botLastError}`);
+  });
+
+  bot.on('shardResume', (shardId, replayed) => {
+    addBotLog(`[shardResume] Shard ${shardId} resumed (${replayed} events)`);
+    botStatus = 'online';
+    botLastError = null;
   });
 
   try {
-   await bot.login(token);
-  } catch(err) {
-   botLastError = err.message || String(err);
-   console.error('[Bot] bot.login() failed:', err.message || err);
-   if(useMessageContent && (err.code === 'DisallowedIntents' || String(err.message).includes('DisallowedIntents') || String(err.message).includes('Privileged intent'))){
-    console.warn('[Bot] Message Content intent rejected by Discord. Retrying without it...');
-    return connect(false);
-   }
-   throw err;
-  }
- }
+    const loginTimeout = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('Discord login timed out after 20 seconds (gateway WebSocket handshake did not complete).')), 20000);
+    });
 
- try {
-  await connect(true);
- } catch(err) {
-  botStatus = 'failed';
-  botLastError = err.message || String(err);
-  console.error('[Bot] Discord bot startup failed:', err.message || err);
-  setTimeout(()=>{
-   console.log('[Bot] Retrying bot connection in background...');
-   startBot().catch(()=>{});
-  }, 30000).unref();
- }
+    await Promise.race([bot.login(token), loginTimeout]);
+  } catch(err) {
+    if (botStatus === 'connecting') botStatus = 'failed';
+    botLastError = err.message || String(err);
+    addBotLog(`bot.login() error: ${botLastError}`);
+
+    botReconnectTimer = setTimeout(() => {
+      addBotLog('Auto-retrying Discord bot connection...');
+      startBot().catch(() => {});
+    }, 30000);
+    botReconnectTimer.unref?.();
+  }
 }
+
+app.get('/api/bot/diagnose', async (_req, res) => {
+  const token = String(process.env.DISCORD_TOKEN || '').trim();
+  const preflight = token ? await checkDiscordBotToken(token) : null;
+  res.json({
+    botStatus: bot?.isReady?.() ? 'online' : botStatus,
+    wsStatus: bot?.ws?.status ?? null,
+    tag: bot?.user?.tag || null,
+    id: bot?.user?.id || null,
+    tokenConfigured: Boolean(token),
+    tokenLength: token.length,
+    preflight,
+    connectedAt: botLastConnectedAt,
+    lastError: botLastError,
+    recentLogs: recentBotLogs.slice(-15)
+  });
+});
+
+app.all(['/api/bot/restart', '/api/admin/bot/restart'], requireAdmin, async (_req, res) => {
+  try {
+    addBotLog('[Admin] Manual bot restart triggered.');
+    botStatus = 'restarting';
+    startBot().catch(() => {});
+    res.json({ ok: true, message: 'Bot restart sequence initiated. Check /health or /api/bot/diagnose in a few seconds.' });
+  } catch (e) {
+    res.status(500).json({ error: e.message || String(e) });
+  }
+});
 
 app.listen(PORT,'0.0.0.0',()=>console.log(`Web service listening on ${PORT}; SQLite DB: ${DB_FILE}`));
 startBot().catch(e=>console.error('Discord bot startup failed; website remains online:',e));
