@@ -85,10 +85,23 @@ for (const legacyFile of [path.join(__dirname, 'invoices.json'), path.join(__dir
 }
 
 // Discord OAuth login + signed, HTTP-only session cookie.
-const OAUTH_CLIENT_ID = process.env.DISCORD_OAUTH_CLIENT_ID || process.env.CLIENT_ID || '';
-const OAUTH_CLIENT_SECRET = process.env.DISCORD_OAUTH_CLIENT_SECRET || '';
-const OAUTH_REDIRECT_URI = process.env.DISCORD_OAUTH_REDIRECT_URI || '';
-const SESSION_SECRET = process.env.SESSION_SECRET || process.env.DISCORD_OAUTH_CLIENT_SECRET || process.env.DISCORD_TOKEN || 'change-this-session-secret';
+const OAUTH_CLIENT_ID = String(process.env.DISCORD_OAUTH_CLIENT_ID || process.env.CLIENT_ID || '').trim();
+const OAUTH_CLIENT_SECRET = String(process.env.DISCORD_OAUTH_CLIENT_SECRET || '').trim();
+function getOAuthRedirectUri(req) {
+  if (process.env.DISCORD_OAUTH_REDIRECT_URI && process.env.DISCORD_OAUTH_REDIRECT_URI.trim()) {
+    return process.env.DISCORD_OAUTH_REDIRECT_URI.trim();
+  }
+  if (process.env.RENDER_EXTERNAL_URL) {
+    return `${process.env.RENDER_EXTERNAL_URL.trim().replace(/\/+$/, '')}/auth/discord/callback`;
+  }
+  if (req) {
+    const proto = req.get('x-forwarded-proto') || req.protocol || 'http';
+    const host = req.get('x-forwarded-host') || req.get('host');
+    if (host) return `${proto}://${host}/auth/discord/callback`;
+  }
+  return '';
+}
+const SESSION_SECRET = String(process.env.SESSION_SECRET || process.env.DISCORD_OAUTH_CLIENT_SECRET || process.env.DISCORD_TOKEN || 'change-this-session-secret').trim();
 const ADMIN_DISCORD_IDS = new Set(String(process.env.ADMIN_DISCORD_IDS || '').split(',').map(x=>x.trim()).filter(Boolean));
 function signValue(value){const data=Buffer.from(JSON.stringify(value)).toString('base64url');const sig=crypto.createHmac('sha256',SESSION_SECRET).update(data).digest('base64url');return `${data}.${sig}`;}
 function readSigned(value){try{const [data,sig]=String(value||'').split('.');if(!data||!sig)return null;const expected=crypto.createHmac('sha256',SESSION_SECRET).update(data).digest('base64url');if(!safeEqual(sig,expected))return null;const obj=JSON.parse(Buffer.from(data,'base64url').toString());if(obj.exp && obj.exp<Date.now())return null;return obj;}catch{return null;}}
@@ -98,19 +111,35 @@ function isAdminUser(user){return Boolean(user?.id && ADMIN_DISCORD_IDS.has(Stri
 function requireAdmin(req,res,next){const user=sessionUser(req);if(!user)return res.status(401).json({error:'Login with Discord first.'});if(!isAdminUser(user))return res.status(403).json({error:'Administrator access required.'});req.sessionUser=user;next();}
 function escapeHtml(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 app.get('/auth/discord',(req,res)=>{
- if(!OAUTH_CLIENT_ID||!OAUTH_REDIRECT_URI)return res.status(503).send('Discord OAuth is not configured. Set DISCORD_OAUTH_CLIENT_ID, DISCORD_OAUTH_CLIENT_SECRET and DISCORD_OAUTH_REDIRECT_URI in Render.');
+ const redirectUri = getOAuthRedirectUri(req);
+ const missing = [];
+ if (!OAUTH_CLIENT_ID) missing.push('DISCORD_OAUTH_CLIENT_ID (or CLIENT_ID)');
+ if (!OAUTH_CLIENT_SECRET) missing.push('DISCORD_OAUTH_CLIENT_SECRET');
+ if (!redirectUri) missing.push('DISCORD_OAUTH_REDIRECT_URI');
+ if (missing.length) {
+   return res.status(503).type('html').send(`<!doctype html><html><head><meta charset="utf-8"><title>Discord OAuth Not Configured</title><style>body{background:#0c0f17;color:#e2e8f0;font-family:system-ui;padding:40px;max-width:640px;margin:0 auto}h1{color:#f87171}code{background:#1e293b;padding:2px 6px;border-radius:4px;color:#93c5fd}ul{line-height:1.8}a{color:#60a5fa}</style></head><body><h1>OAuth Configuration Incomplete</h1><p>The following required environment variable(s) are missing in Render:</p><ul>${missing.map(m=>`<li><code>${escapeHtml(m)}</code></li>`).join('')}</ul><p>Please set them in Render &rarr; Environment, then redeploy.</p><p><a href="/">&larr; Back to Invoice Studio</a></p></body></html>`);
+ }
  const state=crypto.randomBytes(24).toString('hex');
  res.setHeader('Set-Cookie',`invoice_oauth_state=${signValue({state,exp:Date.now()+10*60*1000})}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=600`);
- const url=new URL('https://discord.com/oauth2/authorize');url.searchParams.set('client_id',OAUTH_CLIENT_ID);url.searchParams.set('redirect_uri',OAUTH_REDIRECT_URI);url.searchParams.set('response_type','code');url.searchParams.set('scope','identify');url.searchParams.set('state',state);
+ const url=new URL('https://discord.com/oauth2/authorize');url.searchParams.set('client_id',OAUTH_CLIENT_ID);url.searchParams.set('redirect_uri',redirectUri);url.searchParams.set('response_type','code');url.searchParams.set('scope','identify');url.searchParams.set('state',state);
  res.redirect(url.toString());
 });
 app.get('/auth/discord/callback',async(req,res)=>{
+ const redirectUri = getOAuthRedirectUri(req);
  try{
   const saved=readSigned(cookieValue(req,'invoice_oauth_state'));res.setHeader('Set-Cookie','invoice_oauth_state=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0');
   if(!saved||!req.query.state||!safeEqual(saved.state,req.query.state))return res.status(400).send('Invalid or expired Discord login state. Please try again.');
+  if(req.query.error)return res.status(400).send(`Discord login was cancelled or denied: ${escapeHtml(req.query.error_description||req.query.error)}`);
   if(!req.query.code)return res.status(400).send('Discord login was cancelled.');
-  const tokenResponse=await fetch('https://discord.com/api/oauth2/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({client_id:OAUTH_CLIENT_ID,client_secret:OAUTH_CLIENT_SECRET,grant_type:'authorization_code',code:String(req.query.code),redirect_uri:OAUTH_REDIRECT_URI})});
-  const token=await tokenResponse.json();if(!tokenResponse.ok||!token.access_token)throw new Error(token.error_description||'Discord token exchange failed');
+  const tokenResponse=await fetch('https://discord.com/api/oauth2/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({client_id:OAUTH_CLIENT_ID,client_secret:OAUTH_CLIENT_SECRET,grant_type:'authorization_code',code:String(req.query.code),redirect_uri:redirectUri})});
+  const tokenRaw=await tokenResponse.text();
+  let token={};
+  try{token=JSON.parse(tokenRaw);}catch{token={error:tokenRaw};}
+  if(!tokenResponse.ok||!token.access_token){
+    const detail=token.error_description?`${token.error}: ${token.error_description}`:(token.error||tokenRaw);
+    console.error('Discord OAuth token exchange failed:',tokenResponse.status,detail);
+    throw new Error(detail);
+  }
   const userResponse=await fetch('https://discord.com/api/users/@me',{headers:{Authorization:`Bearer ${token.access_token}`}});
   const user=await userResponse.json();if(!userResponse.ok||!user.id)throw new Error('Could not retrieve Discord profile.');
   const profile={id:String(user.id),username:user.global_name||user.username,discriminator:user.discriminator||'0',avatar:user.avatar||null};
@@ -118,7 +147,45 @@ app.get('/auth/discord/callback',async(req,res)=>{
   const session=signValue({user:profile,exp:Date.now()+7*24*60*60*1000});
   res.setHeader('Set-Cookie',`invoice_session=${session}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=604800`);
   res.redirect('/');
- }catch(e){console.error('Discord OAuth failed:',e.message);res.status(502).send('Discord login failed. Check OAuth configuration and redirect URL in Render.');}
+ }catch(e){
+  console.error('Discord OAuth failed:',e.message);
+  res.status(502).type('html').send(`<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Discord Login Failed</title>
+<style>
+body{font-family:system-ui,-apple-system,sans-serif;background:#0c0f17;color:#e2e8f0;padding:40px 20px;line-height:1.6;max-width:680px;margin:0 auto}
+.card{background:#161b26;border:1px solid #2d3748;border-radius:12px;padding:24px;box-shadow:0 10px 25px rgba(0,0,0,.5)}
+h1{color:#f87171;font-size:22px;margin-top:0}
+.badge{display:inline-block;background:#ef444422;color:#f87171;border:1px solid #ef444444;border-radius:6px;padding:6px 12px;font-family:monospace;font-size:14px;margin-bottom:16px;word-break:break-all}
+ol{padding-left:20px}
+li{margin-bottom:12px}
+code{background:#0b0d13;color:#93c5fd;padding:2px 6px;border-radius:4px;font-size:13px}
+a{color:#60a5fa;text-decoration:none}
+a:hover{text-decoration:underline}
+.btn{display:inline-block;margin-top:16px;background:#2563eb;color:#fff;padding:8px 18px;border-radius:6px;font-weight:500}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Discord Login Failed</h1>
+  <div class="badge">Discord Error: ${escapeHtml(e.message)}</div>
+  <p>The server could not complete the OAuth login. Please check these settings in <b>Render</b> and the <b>Discord Developer Portal</b>:</p>
+  <ol>
+    <li><b>DISCORD_OAUTH_CLIENT_SECRET in Render:</b><br>
+    In <a href="https://discord.com/developers/applications" target="_blank" rel="noopener">Discord Developer Portal</a> &rarr; Your App &rarr; <b>OAuth2</b> &rarr; <b>General</b>, copy the <b>Client Secret</b> (click <i>Reset Secret</i> if needed) and paste it into Render Environment variables as <code>DISCORD_OAUTH_CLIENT_SECRET</code>.<br>
+    <em>Important: Do not paste the Bot Token here. OAuth Client Secret and Bot Token are different.</em></li>
+    <li><b>OAuth2 Redirect URI in Discord Developer Portal:</b><br>
+    Under <b>OAuth2 &rarr; Redirects</b>, make sure this exact URL is added:<br>
+    <code>${escapeHtml(redirectUri || 'https://invoice-gen-bbgn.onrender.com/auth/discord/callback')}</code></li>
+    <li><b>DISCORD_OAUTH_REDIRECT_URI in Render:</b><br>
+    In Render Environment, set <code>DISCORD_OAUTH_REDIRECT_URI</code> to:<br>
+    <code>${escapeHtml(redirectUri || 'https://invoice-gen-bbgn.onrender.com/auth/discord/callback')}</code></li>
+  </ol>
+  <a class="btn" href="/">Return to Invoice Studio</a>
+</div>
+</body>
+</html>`);
+ }
 });
 app.get('/auth/me',(req,res)=>{const user=sessionUser(req);res.json({loggedIn:Boolean(user),user:user?{...user,isAdmin:isAdminUser(user)}:null});});
 app.get('/logout',(req,res)=>{res.setHeader('Set-Cookie','invoice_session=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0');res.redirect('/');});

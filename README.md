@@ -112,9 +112,17 @@ Use `/gen app_id:<Steam App ID>` to create a private downloadable ZIP for a game
 Install/download games through the official Steam client using an account that owns the game.
 
 ## Discord login and invoice admin audit
-- `GET /auth/discord` starts Discord OAuth login; `GET /auth/discord/callback` completes it. Set `DISCORD_OAUTH_CLIENT_ID`, `DISCORD_OAUTH_CLIENT_SECRET`, and `DISCORD_OAUTH_REDIRECT_URI` in Render. Register the redirect URI exactly in the Discord Developer Portal (for this service it will normally be `https://invoice-gen-1-it3l.onrender.com/auth/discord/callback`).
-- `SESSION_SECRET` should be a long random secret (32+ characters). The session cookie is signed, HttpOnly, Secure, and SameSite=Lax.
-- `ADMIN_DISCORD_IDS` is a comma-separated list of Discord user IDs allowed to view `/admin` and `/api/admin/invoices`.
+- `GET /auth/discord` starts Discord OAuth login; `GET /auth/discord/callback` completes it.
+- **Render Environment Variables needed for Discord Login:**
+  - `CLIENT_ID` or `DISCORD_OAUTH_CLIENT_ID` — Your Discord Application ID (from Discord Developer Portal &rarr; General Information &rarr; Application ID).
+  - `DISCORD_OAUTH_CLIENT_SECRET` — Your Discord OAuth2 Client Secret (from Discord Developer Portal &rarr; **OAuth2** &rarr; **General** &rarr; **Client Secret**). *Warning: Do NOT use the Bot Token here. It must be the OAuth2 Client Secret.*
+  - `DISCORD_OAUTH_REDIRECT_URI` — Must be exactly `https://<your-render-subdomain>.onrender.com/auth/discord/callback` (e.g. `https://invoice-gen-bbgn.onrender.com/auth/discord/callback`).
+  - `SESSION_SECRET` — A random string (32+ characters) for signing session cookies.
+  - `ADMIN_DISCORD_IDS` — Comma-separated list of Discord user IDs allowed to access `/admin`.
+- **Discord Developer Portal configuration:**
+  - Open https://discord.com/developers/applications and select your application.
+  - Go to **OAuth2** &rarr; **Redirects**.
+  - Add your exact callback URL: `https://<your-render-subdomain>.onrender.com/auth/discord/callback` (e.g. `https://invoice-gen-bbgn.onrender.com/auth/discord/callback`). Click **Save Changes**.
 - `INVOICE_LOG_CHANNEL_ID` is the Discord text channel ID where invoice creation/update reports and a PDF attachment are sent. `INVOICE_NOTIFICATION_CHANNEL_ID` is accepted as an alternate name. Give the bot View Channel, Send Messages, and Attach Files permissions there.
 - The invoice website remains usable without logging in; invoice records made without OAuth show `Website user` rather than a verified Discord identity. To attribute invoices to a real Discord account, use Login with Discord before creating/saving them.
 - `/admin` lists invoice activity with creator, buyer, date, products, totals, and the stored record. Only IDs in `ADMIN_DISCORD_IDS` can access it. Private account credentials are stored in the database payload; restrict database and admin access accordingly.
