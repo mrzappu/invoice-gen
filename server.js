@@ -171,17 +171,45 @@ p{color:#cbd5e1;margin:12px 0}
   }
   if(req.query.error)return res.status(400).send(`Discord login was cancelled or denied: ${escapeHtml(req.query.error_description||req.query.error)}`);
   if(!req.query.code)return res.status(400).send('Discord login was cancelled.');
-  const tokenResponse=await fetch('https://discord.com/api/oauth2/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({client_id:OAUTH_CLIENT_ID,client_secret:OAUTH_CLIENT_SECRET,grant_type:'authorization_code',code:String(req.query.code),redirect_uri:redirectUri})});
+  const DISCORD_USER_AGENT = 'InvoiceStudio (https://invoice-gen-bbgn.onrender.com, 1.1.0)';
+  const tokenResponse=await fetch('https://discord.com/api/oauth2/token',{
+    method:'POST',
+    headers:{
+      'Content-Type':'application/x-www-form-urlencoded',
+      'User-Agent':DISCORD_USER_AGENT,
+      'Accept':'application/json'
+    },
+    body:new URLSearchParams({client_id:OAUTH_CLIENT_ID,client_secret:OAUTH_CLIENT_SECRET,grant_type:'authorization_code',code:String(req.query.code),redirect_uri:redirectUri})
+  });
   const tokenRaw=await tokenResponse.text();
   let token={};
   try{token=JSON.parse(tokenRaw);}catch{token={error:tokenRaw};}
   if(!tokenResponse.ok||!token.access_token){
+    if(tokenResponse.status===429||tokenRaw.includes('1015')||tokenRaw.toLowerCase().includes('rate limit')){
+      throw new Error('Cloudflare Rate Limit (Error 1015): Discord is temporarily rate-limiting requests from Render shared IP. This block automatically lifts in ~10 minutes, or you can restart the service in Render to acquire a fresh IP address.');
+    }
+    if(tokenRaw.startsWith('<')||tokenResponse.status===403){
+      throw new Error(`Discord Cloudflare Protection (HTTP ${tokenResponse.status}): Please wait a few minutes or restart the service in Render.`);
+    }
     const detail=token.error_description?`${token.error}: ${token.error_description}`:(token.error||tokenRaw);
     console.error('Discord OAuth token exchange failed:',tokenResponse.status,detail);
     throw new Error(detail);
   }
-  const userResponse=await fetch('https://discord.com/api/users/@me',{headers:{Authorization:`Bearer ${token.access_token}`}});
-  const user=await userResponse.json();if(!userResponse.ok||!user.id)throw new Error('Could not retrieve Discord profile.');
+  const userResponse=await fetch('https://discord.com/api/users/@me',{
+    headers:{
+      'Authorization':`Bearer ${token.access_token}`,
+      'User-Agent':DISCORD_USER_AGENT,
+      'Accept':'application/json'
+    }
+  });
+  if(!userResponse.ok){
+    const uRaw=await userResponse.text();
+    if(userResponse.status===429||uRaw.includes('1015')){
+      throw new Error('Cloudflare Rate Limit (Error 1015): Discord rate limit on server IP. Wait a few minutes or restart Render service.');
+    }
+    throw new Error(`Could not retrieve Discord profile (HTTP ${userResponse.status}).`);
+  }
+  const user=await userResponse.json();if(!user||!user.id)throw new Error('Could not retrieve Discord profile.');
   const profile={id:String(user.id),username:user.global_name||user.username,discriminator:user.discriminator||'0',avatar:user.avatar||null};
   try{db.prepare('INSERT INTO admin_login_history(discord_id,username,avatar,logged_in_at) VALUES(?,?,?,?)').run(profile.id,profile.username,profile.avatar,new Date().toISOString());}catch(e){console.warn('Could not record Discord login history:',e.message);}
   const session=signValue({user:profile,exp:Date.now()+7*24*60*60*1000});
