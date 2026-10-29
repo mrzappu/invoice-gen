@@ -3,7 +3,8 @@
 Node.js/Express website and Discord bot. Invoice records and private product credentials are stored in SQLite (`invoice.db`). The public invoice API never returns account email/ID or password fields, and the invoice preview/PNG/PDF never renders them.
 
 ## Features
-- Generic invoice templates, color themes, live preview, PNG/PDF/print exports.
+- Generic invoice templates, color themes, live preview, PNG/PDF/print exports (including `67 HUB`, `Standard`, and `IMPOSTER NETWORK`).
+- Dynamic Discord bot presence/status: automatically rotates activities such as `Watching 67 Hub`, `Watching Looking for NEW Invoices!`, `Watching <count> NEW Invoices!`, and `Watching <count> Total Invoices`. Presence updates immediately when new invoices are created.
 - Save/search invoices using the same invoice ID.
 - SQLite database with automatic schema creation and a compatibility import for legacy `invoices.json` records.
 - `/invoice-search`: invoice lookup, buyer selection, product selection, Replace/Help/Bug/Refund reason, then private ticket creation.
@@ -84,7 +85,7 @@ Do not commit production credentials or a database containing customer/account p
 ## Buyer identity, replacement chain, and owner-channel delivery
 
 - The invoice website has a **Buyer Discord User ID** field. Save the invoice after entering the ID so the bot can DM replacement PDFs to that buyer.
-- New invoices save their selected preset (`Standard`, `Gojo's Steam Lounge`, or `IMPOSTER NETWORK`), theme colour, watermark, and footer branding. Replacement invoices inherit that saved template and colour scheme. The generated PDF uses the matching brand/accent colour and watermark setting.
+- New invoices save their selected preset (`Standard`, `67 HUB`, or `IMPOSTER NETWORK`), theme colour, watermark, and footer branding. Replacement invoices inherit that saved template and colour scheme. The generated PDF uses the matching brand/accent colour and watermark setting.
 - Each invoice ID can be replaced only once. The new replacement invoice ID can then be used for one further replacement, so replacements form a chain; the bot blocks replacing the same ID twice and reports the replacement count.
 - Configure `REPLACEMENT_OWNER_CHANNEL_ID` (or `OWNER_CHANNEL_ID`) to a private staff/owner channel. Replacement records are sent there with the buyer, original/new invoice IDs, product, and spoiler-hidden account email/password. Restrict that channel to trusted staff because it can contain account credentials.
 - `/invoice-replacement invoice_id:<ID>` creates a replacement from a saved invoice. Optional `account_email` and `account_password` values are accepted for the replacement account and are stored only in the private invoice/ticket database and sent as spoiler-hidden values to the configured owner channel and buyer DM where possible. Avoid running this command in a public channel because slash-command option values may be visible to channel members; use it in a private staff channel.
@@ -96,7 +97,7 @@ Back up your production database before deployment. The ZIP's `invoice.db` is a 
 
 ## Public game price cards (`/post`)
 
-Staff/server owners can publish a public game card with `/post`. Provide exactly one of `game_name` or `game_id`, enter `our_price`, and optionally select `template` (`gojo`, `imposter`, or `standard`). The bot posts a titled card with green Our Price, red Steam Price, Game ID, Steam header image, Buy Game link button, and branded footer. Publishing also saves/updates the Our Price in SQLite so `/game` uses the same value. The command posts in the channel where it is invoked; use it in the desired public channel.
+Staff/server owners can publish a public game card with `/post`. Provide exactly one of `game_name` or `game_id`, enter `our_price`, and optionally select `template` (`67hub`, `imposter`, or `standard`). The bot posts a titled card with green Our Price, red Steam Price, Game ID, Steam header image, Buy Game link button, and branded footer. Publishing also saves/updates the Our Price in SQLite so `/game` uses the same value. The command posts in the channel where it is invoked; use it in the desired public channel.
 
 ### `/post` game card style update
 - `/post` now publishes a clean Discord Components V2 card matching the `/game` result style, without a traditional coloured embed sidebar.
@@ -107,7 +108,7 @@ Staff/server owners can publish a public game card with `/post`. Provide exactly
 
 ## Admin `/gen` — Steam metadata ZIP
 
-Use `/gen app_id:<Steam App ID>` to create a private downloadable ZIP for a game listed on the Steam Store. The command is restricted to the server owner, administrators, members with Manage Channels, or the configured `STAFF_ROLE_ID`. The ZIP includes `game-metadata.json` and `README.txt` with a Gojo's Steam Lounge copyright/license notice. It contains metadata only—no game content, Steam manifests, Lua files, or ownership bypass. The command uses Steam's public Store app-details endpoint.
+Use `/gen app_id:<Steam App ID>` to create a private downloadable ZIP for a game listed on the Steam Store. The command is restricted to the server owner, administrators, members with Manage Channels, or the configured `STAFF_ROLE_ID`. The ZIP includes `game-metadata.json` and `README.txt` with a 67 HUB copyright/license notice. It contains metadata only—no game content, Steam manifests, Lua files, or ownership bypass. The command uses Steam's public Store app-details endpoint.
 
 Install/download games through the official Steam client using an account that owns the game.
 

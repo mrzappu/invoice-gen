@@ -14,7 +14,8 @@ const {
   AttachmentBuilder, ActionRowBuilder, StringSelectMenuBuilder,
   ButtonBuilder, ButtonStyle, UserSelectMenuBuilder, ChannelType, ModalBuilder, TextInputBuilder, TextInputStyle,
   PermissionFlagsBits, MessageFlags, ContainerBuilder, TextDisplayBuilder,
-  SeparatorBuilder, EmbedBuilder, MediaGalleryBuilder, MediaGalleryItemBuilder
+  SeparatorBuilder, EmbedBuilder, MediaGalleryBuilder, MediaGalleryItemBuilder,
+  ActivityType
 } = require('discord.js');
 
 const app = express();
@@ -71,6 +72,7 @@ function saveInvoice(body) {
   db.prepare(`INSERT INTO invoices(invoice_id,buyer_name,payload,created_at,updated_at) VALUES(?,?,?,?,?)
     ON CONFLICT(invoice_id) DO UPDATE SET buyer_name=excluded.buyer_name,payload=excluded.payload,updated_at=excluded.updated_at`)
     .run(invoiceId,buyerName,JSON.stringify(payload),now,now);
+  try { if (typeof updateBotPresence === 'function') updateBotPresence(); } catch {}
   return payload;
 }
 // Backfill existing saved invoices into the audit log so the admin dashboard also shows older records.
@@ -641,6 +643,39 @@ function addBotLog(msg){
   if (recentBotLogs.length > 25) recentBotLogs.shift();
   console.log(line);
 }
+let botPresenceInterval = null;
+let botPresenceIndex = 0;
+
+function getInvoiceCount() {
+  try {
+    const row = db.prepare('SELECT COUNT(*) AS count FROM invoices').get();
+    return Number(row?.count || 0);
+  } catch {
+    return 0;
+  }
+}
+
+function updateBotPresence() {
+  if (!bot || !bot.user || !bot.isReady?.()) return;
+  try {
+    const total = getInvoiceCount();
+    const activities = [
+      { name: '67 Hub', type: ActivityType.Watching },
+      { name: 'Looking for NEW Invoices!', type: ActivityType.Watching },
+      { name: `${total} NEW Invoices!`, type: ActivityType.Watching },
+      { name: `for NEW Invoices! (${total} Total)`, type: ActivityType.Watching },
+      { name: `${total} Total Invoices`, type: ActivityType.Watching }
+    ];
+    const current = activities[botPresenceIndex % activities.length];
+    botPresenceIndex = (botPresenceIndex + 1) % activities.length;
+    bot.user.setPresence({
+      activities: [current],
+      status: 'online'
+    });
+  } catch (e) {
+    // Ignore presence errors if rate-limited or disconnecting
+  }
+}
 
 app.get('/health',(_req,res)=>{
   res.status(200).json({
@@ -730,7 +765,7 @@ function replacementCount(invoiceId) {
 function getTemplate(invoice) {
   const raw=String(invoice.templateName||invoice.template||invoice.invoiceTemplate||invoice.themeName||invoice.preset||'').toLowerCase();
   const brand=String(invoice.brandName||invoice.sellerName||invoice.shopName||'').toLowerCase();
-  if(/gojo/.test(raw+' '+brand))return {name:"Gojo's Steam Lounge",brand:"GOJO'S STEAM LOUNGE",accent:'#1688ff',watermark:"GOJO'S STEAM LOUNGE",theme:'blue'};
+  if(/67\s*hub|hub\s*67|gojo/i.test(raw+' '+brand))return {name:"67 HUB",brand:"67 HUB",accent:'#1688ff',watermark:"67 HUB",theme:'blue'};
   if(/imposter|inet/.test(raw+' '+brand))return {name:'IMPOSTER NETWORK',brand:'IMPOSTER NETWORK',accent:'#7c3aed',watermark:'IMPOSTER NETWORK',theme:'purple'};
   return {name:String(invoice.templateName||invoice.template||invoice.invoiceTemplate||invoice.themeName||'Standard'),brand:String(invoice.brandName||invoice.sellerName||invoice.shopName||'Your Shop'),accent:String(invoice.themeColor||invoice.primaryColor||'#2563eb'),watermark:String(invoice.watermark||invoice.brandName||invoice.sellerName||'YOUR SHOP'),theme:String(invoice.theme||'standard')};
 }
@@ -880,7 +915,7 @@ async function handleInteraction(interaction){
      const accountEmail='';const accountPassword='';
      const newId=makeInvoiceId('INV');const tpl=getTemplate(original);const templateName=tpl.name;const count=replacementCount(original.invoiceId)+1;const now=new Date().toISOString();
      const products=(original.products||[]).map((p,i)=>i===0?{...p,accountEmail:accountEmail||p.accountEmail||'',accountPassword:accountPassword||p.accountPassword||''}:p);
-     const replacement={...original,products,invoiceId:newId,documentType:original.documentType||'INVOICE',replacementOf:original.invoiceId,replacementLabel:'REPLACEMENT',qrEnabled:false,qrUpiId:'',templateName,preset:original.preset||(/gojo/i.test(templateName)?'gojo':/imposter/i.test(templateName)?'imposter':'standard'),brandName:tpl.brand,sellerName:tpl.brand,shopName:tpl.brand,theme:tpl.theme,themeColor:tpl.accent,primaryColor:tpl.accent,watermark:tpl.watermark,showWatermark:original.showWatermark!==false,createdAt:now,savedAt:now,replacementCount:count};
+     const replacement={...original,products,invoiceId:newId,documentType:original.documentType||'INVOICE',replacementOf:original.invoiceId,replacementLabel:'REPLACEMENT',qrEnabled:false,qrUpiId:'',templateName,preset:original.preset||(/67\s*hub|gojo/i.test(templateName)?'67hub':/imposter/i.test(templateName)?'imposter':'standard'),brandName:tpl.brand,sellerName:tpl.brand,shopName:tpl.brand,theme:tpl.theme,themeColor:tpl.accent,primaryColor:tpl.accent,watermark:tpl.watermark,showWatermark:original.showWatermark!==false,createdAt:now,savedAt:now,replacementCount:count};
      saveInvoice(replacement);
      db.prepare('INSERT INTO invoice_replacements(new_invoice_id,original_invoice_id,ticket_id,created_by,template_name,created_at) VALUES(?,?,?,?,?,?)').run(newId,original.invoiceId,null,interaction.user.id,templateName,now);
      const image=await createInvoiceImageBuffer(replacement);const pdf=await makePdfFromRenderedImage(image,replacement);
@@ -929,7 +964,7 @@ async function handleInteraction(interaction){
      const newProductName=interaction.fields.getTextInputValue('replacement_product').trim();const accountEmail=interaction.fields.getTextInputValue('replacement_email').trim();const accountPassword=interaction.fields.getTextInputValue('replacement_password').trim();const replacementNote=interaction.fields.getTextInputValue('replacement_note').trim();
      const newId=makeInvoiceId('INV');const tpl=getTemplate(original);const templateName=tpl.name;const count=replacementCount(original.invoiceId)+1;const now=new Date().toISOString();
      const products=originalProducts.map((p,i)=>i===productIndex?{...p,name:newProductName||p.name||ticket.product_name,accountEmail:accountEmail||p.accountEmail||'',accountPassword:accountPassword||p.accountPassword||''}:p);
-     const replacement={...original,products,invoiceId:newId,documentType:original.documentType||'INVOICE',replacementOf:original.invoiceId,replacementLabel:'REPLACEMENT',qrEnabled:false,qrUpiId:'',replacementNote:replacementNote||undefined,createdBy:{id:interaction.user.id,username:interaction.user.username},templateName,preset:original.preset||(/gojo/i.test(templateName)?'gojo':/imposter/i.test(templateName)?'imposter':'standard'),brandName:original.brandName||tpl.brand,sellerName:original.sellerName||tpl.brand,shopName:original.shopName||tpl.brand,theme:original.theme||tpl.theme,themeColor:original.themeColor||tpl.accent,primaryColor:original.primaryColor||tpl.accent,watermark:original.watermark||tpl.watermark,showWatermark:original.showWatermark!==false,createdAt:now,savedAt:now,date:now,replacementCount:count};
+     const replacement={...original,products,invoiceId:newId,documentType:original.documentType||'INVOICE',replacementOf:original.invoiceId,replacementLabel:'REPLACEMENT',qrEnabled:false,qrUpiId:'',replacementNote:replacementNote||undefined,createdBy:{id:interaction.user.id,username:interaction.user.username},templateName,preset:original.preset||(/67\s*hub|gojo/i.test(templateName)?'67hub':/imposter/i.test(templateName)?'imposter':'standard'),brandName:original.brandName||tpl.brand,sellerName:original.sellerName||tpl.brand,shopName:original.shopName||tpl.brand,theme:original.theme||tpl.theme,themeColor:original.themeColor||tpl.accent,primaryColor:original.primaryColor||tpl.accent,watermark:original.watermark||tpl.watermark,showWatermark:original.showWatermark!==false,createdAt:now,savedAt:now,date:now,replacementCount:count};
      saveInvoice(replacement);db.prepare('INSERT INTO invoice_replacements(new_invoice_id,original_invoice_id,ticket_id,created_by,template_name,created_at) VALUES(?,?,?,?,?,?)').run(newId,original.invoiceId,ticket.id,interaction.user.id,templateName,now);
      const image=await createInvoiceImageBuffer(replacement);const pdf=await makePdfFromRenderedImage(image,replacement);const safeId=newId.replace(/[^a-z0-9_-]/gi,'_');
      const buyerId=String(original.discordUserId||original.buyerDiscordId||ticket.opener_id||'');let dmSent=false;try{const buyer=await bot.users.fetch(ticket.opener_id);const credentialText=`${accountEmail?`\n**New account email / ID:** ||${accountEmail}||`:''}${accountPassword?`\n**New account password:** ||${accountPassword}||`:''}`;await buyer.send({content:`## REPLACEMENT\n\nThank you for waiting! Your replacement invoice is ready.\n**New invoice ID:** \`${newId}\`\n**Original invoice ID:** \`${original.invoiceId}\`\n**Item:** ${short(products[productIndex]?.name||ticket.product_name)}\n**Prepared by:** <@${interaction.user.id}>\n\nKeep the new invoice ID for future support. If you have any issue, open a ticket using the new invoice ID through \`/invoice-panel\`.${credentialText}`,files:[new AttachmentBuilder(image,{name:`${safeId}.png`,description:'Replacement invoice image'}),new AttachmentBuilder(pdf,{name:`${safeId}.pdf`,description:'PDF matching the replacement invoice image'})],allowedMentions:{parse:[],users:[interaction.user.id]}});dmSent=true;}catch(e){console.warn('Replacement invoice DM failed:',e.message);}
@@ -1072,6 +1107,11 @@ async function startBot(){
     addBotLog(`[Preflight] Preflight check skipped: ${e.message}`);
   }
 
+  if (botPresenceInterval) {
+    clearInterval(botPresenceInterval);
+    botPresenceInterval = null;
+  }
+
   // Safely destroy existing bot instance if present
   if (bot) {
     try {
@@ -1101,6 +1141,12 @@ async function startBot(){
     botLastError = null;
     botLastConnectedAt = new Date().toISOString();
     addBotLog(`Discord bot online as ${bot.user.tag} (ID: ${bot.user.id})`);
+
+    botPresenceIndex = 0;
+    updateBotPresence();
+    if (botPresenceInterval) clearInterval(botPresenceInterval);
+    botPresenceInterval = setInterval(updateBotPresence, 15000);
+    botPresenceInterval.unref?.();
 
     try {
       const rest = new REST({ version: '10' }).setToken(token);
@@ -1135,6 +1181,10 @@ async function startBot(){
   });
 
   bot.on('shardDisconnect', (event, shardId) => {
+    if (botPresenceInterval) {
+      clearInterval(botPresenceInterval);
+      botPresenceInterval = null;
+    }
     const code = event?.code ?? 'unknown';
     const reason = event?.reason || 'No reason specified';
     addBotLog(`[shardDisconnect] Shard ${shardId} disconnected: code=${code} (${reason})`);
@@ -1159,6 +1209,7 @@ async function startBot(){
     addBotLog(`[shardResume] Shard ${shardId} resumed (${replayed} events)`);
     botStatus = 'online';
     botLastError = null;
+    updateBotPresence();
   });
 
   try {
